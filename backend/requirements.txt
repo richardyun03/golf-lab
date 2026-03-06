@@ -1,0 +1,20 @@
+# API
+fastapi>=0.111.0
+uvicorn[standard]>=0.29.0
+python-multipart>=0.0.9
+pydantic>=2.7.0
+pydantic-settings>=2.2.1
+
+# Video processing
+opencv-python>=4.9.0
+mediapipe>=0.10.11
+
+# ML
+torch>=2.3.0
+torchvision>=0.18.0
+numpy>=1.26.4
+scipy>=1.13.0          # DTW, signal processing
+scikit-learn>=1.4.2    # Nearest neighbor search, metrics
+
+# Utilities
+python-dotenv>=1.0.1

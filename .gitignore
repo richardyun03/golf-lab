@@ -1,0 +1,69 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+.venv/
+venv/
+env/
+.env
+.env.*
+
+# ML / Data
+*.pt
+*.pth
+*.onnx
+*.pkl
+*.h5
+*.weights
+data/model_weights/*
+!data/model_weights/.gitkeep
+data/pro_swings/*
+!data/pro_swings/.gitkeep
+data/sample_videos/*
+!data/sample_videos/.gitkeep
+
+# Videos (large files)
+*.mp4
+*.mov
+*.avi
+*.mkv
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# Node / React Native
+node_modules/
+mobile/.expo/
+mobile/.expo-shared/
+mobile/android/
+mobile/ios/
+mobile/*.lock
+mobile/dist/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Logs
+*.log
+logs/
