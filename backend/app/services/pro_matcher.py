@@ -1,7 +1,7 @@
 from app.core.config import Settings
 from app.schemas.comparison import ComparisonResult, SwingMatchResult, ProProfile
-from app.ml.pro_comparison.embedder import SwingEmbedder
-from app.ml.pro_comparison.matcher import SwingSimilarityMatcher
+from ml.pro_comparison.embedder import SwingEmbedder
+from ml.pro_comparison.matcher import SwingSimilarityMatcher
 
 
 class ProMatcher:

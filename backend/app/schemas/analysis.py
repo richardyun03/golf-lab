@@ -31,12 +31,24 @@ class SwingFault(BaseModel):
 
 
 class SwingMetrics(BaseModel):
+    # Rotation (relative to address baseline, measured at top of backswing)
     hip_rotation_degrees: Optional[float] = None
     shoulder_rotation_degrees: Optional[float] = None
-    spine_angle_degrees: Optional[float] = None
-    knee_flex_degrees: Optional[float] = None
-    tempo_ratio: Optional[float] = None  # backswing:downswing time ratio
-    attack_angle_degrees: Optional[float] = None
+    x_factor_degrees: Optional[float] = None  # shoulder turn - hip turn at top
+
+    # Spine
+    spine_tilt_address_degrees: Optional[float] = None  # spine angle from vertical at address
+    spine_tilt_change_degrees: Optional[float] = None    # change from address to impact (+ = stood up)
+
+    # Lower body
+    lead_knee_flex_address_degrees: Optional[float] = None
+    lead_knee_flex_impact_degrees: Optional[float] = None
+
+    # Tempo
+    tempo_ratio: Optional[float] = None         # backswing:downswing time ratio (pro avg ~3:1)
+    backswing_duration_seconds: Optional[float] = None
+    downswing_duration_seconds: Optional[float] = None
+    total_swing_duration_seconds: Optional[float] = None  # address to finish
 
 
 class AnalysisResult(BaseModel):
@@ -49,3 +61,16 @@ class AnalysisResult(BaseModel):
     faults: list[SwingFault]
     overall_score: float  # 0-100
     summary: str
+
+
+class AnalysisResponse(BaseModel):
+    """Lighter response model for the API — excludes per-frame keypoints."""
+    session_id: str
+    video_duration_seconds: float
+    fps: float
+    swing_phases: dict[SwingPhase, int]
+    metrics: SwingMetrics
+    faults: list[SwingFault]
+    overall_score: float
+    summary: str
+    frame_count: int

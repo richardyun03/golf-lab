@@ -1,5 +1,5 @@
 from fastapi import APIRouter, UploadFile, File, Depends, HTTPException
-from app.schemas.analysis import AnalysisResult
+from app.schemas.analysis import AnalysisResponse
 from app.services.video_processor import VideoProcessor
 from app.services.swing_analyzer import SwingAnalyzer
 from app.core.dependencies import get_video_processor, get_swing_analyzer
@@ -7,7 +7,7 @@ from app.core.dependencies import get_video_processor, get_swing_analyzer
 router = APIRouter()
 
 
-@router.post("/", response_model=AnalysisResult)
+@router.post("/", response_model=AnalysisResponse)
 async def analyze_swing(
     video: UploadFile = File(...),
     video_processor: VideoProcessor = Depends(get_video_processor),
@@ -15,7 +15,6 @@ async def analyze_swing(
 ):
     """
     Upload a swing video and receive AI-powered analysis including:
-    - Pose keypoints for every frame
     - Swing phase segmentation
     - Biomechanical metrics (hip/shoulder rotation, spine angle, tempo, etc.)
     - Fault detection with correction cues
@@ -30,10 +29,20 @@ async def analyze_swing(
 
     video_data = await video_processor.load(video)
     result = await swing_analyzer.analyze(video_data)
-    return result
+    return AnalysisResponse(
+        session_id=result.session_id,
+        video_duration_seconds=result.video_duration_seconds,
+        fps=result.fps,
+        swing_phases=result.swing_phases,
+        metrics=result.metrics,
+        faults=result.faults,
+        overall_score=result.overall_score,
+        summary=result.summary,
+        frame_count=len(result.keypoints_by_frame),
+    )
 
 
-@router.get("/{session_id}", response_model=AnalysisResult)
+@router.get("/{session_id}", response_model=AnalysisResponse)
 async def get_analysis(session_id: str):
     """Retrieve a previously computed analysis by session ID."""
     raise HTTPException(status_code=404, detail="Session not found (storage not yet implemented).")

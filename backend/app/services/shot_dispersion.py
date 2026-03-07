@@ -1,6 +1,6 @@
 from app.core.config import Settings
 from app.schemas.dispersion import DispersionResult, ClubType
-from app.ml.shot_dispersion.predictor import DispersionPredictor
+from ml.shot_dispersion.predictor import DispersionPredictor
 
 
 class ShotDispersionService:

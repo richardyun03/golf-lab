@@ -47,16 +47,25 @@ class SwingPhaseClassifier:
         # ---- Step 1: Find the swing window via body velocity ----
         swing_start, swing_end = self._find_swing_window(body_vel_smooth)
 
-        # ---- Step 2: Find IMPACT — peak body velocity in the swing window ----
-        swing_vel = body_vel_smooth[swing_start:swing_end]
-        impact_frame = swing_start + int(np.argmax(swing_vel))
-
-        # ---- Step 3: Find TOP — minimum wrist y before impact ----
-        search_region = wrist_y_smooth[swing_start:impact_frame + 1]
+        # ---- Step 2: Find TOP — minimum wrist y (hands highest) in swing window ----
+        # Use the first half of the swing window to avoid follow-through minimums
+        swing_mid = swing_start + (swing_end - swing_start) // 2
+        search_region = wrist_y_smooth[swing_start:swing_mid + 1]
         if len(search_region) > 0:
             top_frame = swing_start + int(np.argmin(search_region))
         else:
-            top_frame = impact_frame - 1
+            top_frame = swing_start + (swing_end - swing_start) // 4
+
+        # ---- Step 3: Find IMPACT — hands at lowest point after top ----
+        # Impact is where wrist Y peaks (hands drop to ball level then rise
+        # into follow-through). Use light smoothing (3-frame) to preserve
+        # the sharp peak — heavier smoothing shifts it by 1-2 frames.
+        wrist_y_light = _smooth(wrist_y, 3)
+        post_top_wrist = wrist_y_light[top_frame:swing_end]
+        if len(post_top_wrist) > 0:
+            impact_frame = top_frame + int(np.argmax(post_top_wrist))
+        else:
+            impact_frame = top_frame + 1
 
         # ---- Step 4: Find ADDRESS — last quiet period before the backswing ----
         pre_swing_vel = body_vel_smooth[:top_frame]
@@ -88,8 +97,17 @@ class SwingPhaseClassifier:
         # ---- Step 6: BACKSWING — wrists clearly moving up ----
         backswing_frame = takeaway_frame + max(1, (top_frame - takeaway_frame) // 3)
 
-        # ---- Step 7: DOWNSWING — starts right after top ----
+        # ---- Step 7: DOWNSWING — body velocity ramps up after top ----
+        # Find where body velocity exceeds the midpoint between top-level
+        # and impact-level velocity (i.e. the swing is actively accelerating).
+        top_vel = body_vel_smooth[top_frame]
+        impact_vel_val = body_vel_smooth[impact_frame]
+        ds_threshold = top_vel + (impact_vel_val - top_vel) * 0.5
         downswing_frame = top_frame + 1
+        for i in range(top_frame + 1, impact_frame):
+            if body_vel_smooth[i] > ds_threshold:
+                downswing_frame = i
+                break
 
         # ---- Step 8: FOLLOW-THROUGH — body decelerating after impact ----
         post_impact_vel = body_vel_smooth[impact_frame:]

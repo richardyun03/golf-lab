@@ -73,8 +73,8 @@ def get_phase_at_frame(phases, frame_idx):
     return current_phase or "unknown"
 
 
-def draw_skeleton(frame, keypoints, phase_name, frame_idx, fps):
-    """Draw keypoints, skeleton, and phase label on a frame."""
+def draw_skeleton(frame, keypoints, phase_name, frame_idx, fps, phase_faults=None):
+    """Draw keypoints, skeleton, phase label, and any active faults on a frame."""
     h, w = frame.shape[:2]
     annotated = frame.copy()
 
@@ -105,7 +105,68 @@ def draw_skeleton(frame, keypoints, phase_name, frame_idx, fps):
     cv2.putText(annotated, label, (30, 60), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 0), 4)
     cv2.putText(annotated, label, (30, 60), cv2.FONT_HERSHEY_SIMPLEX, 1.2, color, 2)
 
+    # Draw fault labels if any are active for this phase
+    if phase_faults:
+        y_offset = 110
+        for fault in phase_faults:
+            severity_pct = f"{fault.severity:.0%}"
+            fault_label = f"FAULT: {fault.fault_type} ({severity_pct})"
+            cv2.putText(annotated, fault_label, (30, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 0), 4)
+            cv2.putText(annotated, fault_label, (30, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 255), 2)
+            y_offset += 40
+
     return annotated
+
+
+def build_fault_summary(video_frames, keypoints_by_frame, pf, faults, phases, fps, output_path):
+    """
+    Generate a summary image: one panel per phase showing the representative
+    frame with skeleton overlay, plus fault annotations on relevant phases.
+    """
+    from app.schemas.analysis import SwingPhase
+
+    phase_order = [
+        SwingPhase.ADDRESS, SwingPhase.TAKEAWAY, SwingPhase.BACKSWING,
+        SwingPhase.TOP, SwingPhase.DOWNSWING, SwingPhase.IMPACT,
+        SwingPhase.FOLLOW_THROUGH, SwingPhase.FINISH,
+    ]
+
+    # Map faults to their phases
+    fault_by_phase = {}
+    for f in faults:
+        fault_by_phase.setdefault(f.phase.value, []).append(f)
+
+    panels = []
+    for phase in phase_order:
+        if phase not in phases:
+            continue
+        rep = pf.rep_frame(phase)
+        frame = video_frames[rep].copy()
+        kps = keypoints_by_frame[rep] if rep < len(keypoints_by_frame) else []
+        phase_faults = fault_by_phase.get(phase.value, [])
+        annotated = draw_skeleton(frame, kps, phase.value, rep, fps, phase_faults)
+
+        # Resize for the summary grid (fit to consistent height)
+        target_h = 640
+        scale = target_h / annotated.shape[0]
+        target_w = int(annotated.shape[1] * scale)
+        panel = cv2.resize(annotated, (target_w, target_h))
+        panels.append(panel)
+
+    if not panels:
+        return
+
+    # Arrange in 2 rows of 4
+    row1 = np.hstack(panels[:4])
+    row2 = np.hstack(panels[4:])
+    # Pad row2 if fewer than 4 panels
+    if row2.shape[1] < row1.shape[1]:
+        pad = np.zeros((row2.shape[0], row1.shape[1] - row2.shape[1], 3), dtype=np.uint8)
+        row2 = np.hstack([row2, pad])
+    summary = np.vstack([row1, row2])
+
+    cv2.imwrite(str(output_path), summary)
+    print(f"Fault summary saved to: {output_path}")
 
 
 def plot_signals(keypoints_by_frame, phases, fps, output_path):
@@ -219,12 +280,51 @@ async def main():
         t = frame / video.fps if video.fps > 0 else 0
         print(f"  {phase.value:20s}  frame={frame:4d}  time={t:.2f}s")
 
-    # Step 4: Generate signal plot
-    print("\nGenerating signal plot...")
+    # Step 4: Metrics + representative frames + fault detection
+    from ml.swing_analysis.fault_detector import FaultDetector, PhaseFrames
+    from ml.swing_analysis.metrics import compute_metrics
+    from app.schemas.analysis import SwingMetrics
+
+    print("\nComputing swing metrics...")
+    metrics = compute_metrics(keypoints_by_frame, phases, video.fps)
+    for field, value in metrics.model_dump().items():
+        if value is not None:
+            label = field.replace("_", " ").title()
+            print(f"  {label:40s}  {value}")
+
+    print("\nRepresentative frames (highest confidence per phase):")
+    pf = PhaseFrames(keypoints_by_frame, phases)
+    for phase in sorted(phases, key=lambda p: phases[p]):
+        rep = pf.rep_frame(phase)
+        orig = phases[phase]
+        t = rep / video.fps if video.fps > 0 else 0
+        label = f"  (was {orig})" if rep != orig else ""
+        print(f"  {phase.value:20s}  rep_frame={rep:4d}  time={t:.2f}s{label}")
+
+    print("\nRunning fault detection...")
+    fault_detector = FaultDetector(settings)
+    faults = fault_detector.detect(keypoints_by_frame, phases, SwingMetrics())
+
+    if faults:
+        for f in faults:
+            print(f"  [{f.severity:.0%} severity] {f.fault_type}")
+            print(f"    {f.description}")
+            print(f"    Fix: {f.correction}")
+            print()
+    else:
+        print("  No faults detected.")
+
+    # Step 5: Generate signal plot
+    print("Generating signal plot...")
     plot_path = output_dir / "output_signals.png"
     plot_signals(keypoints_by_frame, phases, video.fps, str(plot_path))
 
-    # Step 5: Generate annotated video
+    # Step 6: Build fault-by-phase lookup for video overlay
+    fault_by_phase = {}
+    for f in faults:
+        fault_by_phase.setdefault(f.phase.value, []).append(f)
+
+    # Step 7: Generate annotated video with fault overlays
     print("Generating annotated video...")
     video_out_path = output_dir / "output_skeleton.mp4"
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
@@ -233,11 +333,18 @@ async def main():
     for i, frame in enumerate(video.raw_frames):
         kps = keypoints_by_frame[i] if i < len(keypoints_by_frame) else []
         phase_name = get_phase_at_frame(phases, i)
-        annotated = draw_skeleton(frame, kps, phase_name, i, video.fps)
+        phase_faults = fault_by_phase.get(phase_name, [])
+        annotated = draw_skeleton(frame, kps, phase_name, i, video.fps, phase_faults)
         out.write(annotated)
 
     out.release()
     print(f"Annotated video saved to: {video_out_path}")
+
+    # Step 8: Generate fault summary image (representative frames grid)
+    print("Generating fault summary...")
+    summary_path = output_dir / "output_fault_summary.png"
+    build_fault_summary(video.raw_frames, keypoints_by_frame, pf, faults, phases, video.fps, str(summary_path))
+
     print("\nDone!")
 
 
