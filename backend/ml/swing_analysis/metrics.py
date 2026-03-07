@@ -1,7 +1,7 @@
 import math
 import numpy as np
 from app.schemas.analysis import SwingMetrics, SwingPhase, PoseKeypoint
-from ml.swing_analysis.fault_detector import PhaseFrames, _confident, _pt, _midpoint_kp, _angle_deg, MIN_CONFIDENCE
+from ml.swing_analysis.fault_detector import PhaseFrames, _confident, _kp_dict, _pt, _midpoint_kp, _angle_deg, MIN_CONFIDENCE
 
 
 def _has_z(*keypoints: PoseKeypoint) -> bool:
@@ -58,20 +58,10 @@ def _round(val, decimals=1):
 # Rotation metrics (3D world coordinates)
 # ---------------------------------------------------------------------------
 
-def _rotation_angle_3d(kps: dict[str, PoseKeypoint], left_name: str, right_name: str) -> float | None:
+def _rotation_vector_3d(kps: dict[str, PoseKeypoint], left_name: str, right_name: str) -> tuple[float, float] | None:
     """
-    Compute the rotation angle of a body line (e.g., hip line, shoulder line)
-    in the horizontal plane using 3D world coordinates.
-
-    Uses the x (lateral) and z (depth) world coordinates from MediaPipe.
-    MediaPipe world landmarks are hip-centered, in meters:
-      - x: lateral (left/right of the person)
-      - y: vertical (up/down)
-      - z: depth (toward/away from camera)
-
-    The angle is measured in the x-z plane (bird's-eye view).
-    0 degrees = line is purely lateral (square to camera).
-    Returns absolute degrees.
+    Return the (dx, dz) vector of a body line in the horizontal plane
+    using image x and world z coordinates.
     """
     if not _confident(kps, left_name, right_name):
         return None
@@ -79,29 +69,56 @@ def _rotation_angle_3d(kps: dict[str, PoseKeypoint], left_name: str, right_name:
     right = kps[right_name]
     if not _has_z(left, right):
         return None
-
-    # In the x-z (horizontal) plane
-    dx = right.x - left.x  # image x works for lateral (or use world x)
-    dz = right.z - left.z  # world z = depth
-    return math.degrees(math.atan2(dz, dx))
+    dx = right.x - left.x
+    dz = right.z - left.z
+    return (dx, dz)
 
 
 def _rotation_from_address_3d(pf: PhaseFrames, left_name: str, right_name: str) -> float | None:
     """
     Compute rotation at top of backswing relative to address using 3D coords.
 
-    Returns the change in horizontal-plane angle from address to top.
+    Uses dot product between the address and top body-line vectors to get the
+    actual angle between them. This avoids atan2 wraparound issues when
+    shoulders rotate past 90° and left/right swap apparent positions.
     """
     def measure(kps):
-        return _rotation_angle_3d(kps, left_name, right_name)
+        return _rotation_vector_3d(kps, left_name, right_name)
 
-    addr_angle = pf.avg_measurement(SwingPhase.ADDRESS, measure)
-    top_angle = pf.avg_measurement(SwingPhase.TOP, measure)
+    # Collect vectors from multi-frame windows and average components
+    addr_frames = pf.window_frames(SwingPhase.ADDRESS)
+    top_frames = pf.window_frames(SwingPhase.TOP)
 
-    if addr_angle is None or top_angle is None:
+    addr_vecs = [measure(_kp_dict(pf.keypoints[i])) for i in addr_frames]
+    top_vecs = [measure(_kp_dict(pf.keypoints[i])) for i in top_frames]
+    addr_vecs = [v for v in addr_vecs if v is not None]
+    top_vecs = [v for v in top_vecs if v is not None]
+
+    if not addr_vecs or not top_vecs:
         return None
 
-    return abs(top_angle - addr_angle)
+    # Average vectors
+    ax = np.mean([v[0] for v in addr_vecs])
+    az = np.mean([v[1] for v in addr_vecs])
+    tx = np.mean([v[0] for v in top_vecs])
+    tz = np.mean([v[1] for v in top_vecs])
+
+    # Dot product angle
+    dot = ax * tx + az * tz
+    mag_a = math.sqrt(ax ** 2 + az ** 2)
+    mag_t = math.sqrt(tx ** 2 + tz ** 2)
+
+    if mag_a < 1e-6 or mag_t < 1e-6:
+        return None
+
+    cos_angle = max(-1.0, min(1.0, dot / (mag_a * mag_t)))
+    angle = math.degrees(math.acos(cos_angle))
+
+    # Discard implausible values — monocular z estimation can be noisy.
+    # Max realistic rotation: ~120° shoulders, ~80° hips.
+    if angle > 120:
+        return None
+    return angle
 
 
 def _hip_rotation(pf: PhaseFrames) -> float | None:
