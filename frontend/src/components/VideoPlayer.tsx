@@ -1,4 +1,3 @@
-import { useState } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import type { SwingPhase } from "../lib/api";
 import { PHASE_ORDER, PHASE_LABELS } from "../lib/api";
@@ -33,6 +32,16 @@ export default function VideoPlayer({
 
   return (
     <div>
+      {/* Phase label */}
+      <div className="flex items-center justify-between mb-3">
+        <span className="text-xs text-gray-500 uppercase tracking-wider font-semibold">
+          {PHASE_LABELS[current]}
+          <span className="text-gray-600 font-normal ml-2">
+            frame {phases[current]}
+          </span>
+        </span>
+      </div>
+
       {/* Main frame display */}
       <div className="relative rounded-xl overflow-hidden bg-black">
         <img
@@ -40,30 +49,22 @@ export default function VideoPlayer({
           alt={`${PHASE_LABELS[current]} phase`}
           className="w-full"
         />
-        {/* Phase label overlay */}
-        <div className="absolute top-3 left-3 bg-black/60 backdrop-blur-sm text-white text-sm font-medium px-3 py-1.5 rounded-full">
-          {PHASE_LABELS[current]}
-        </div>
-        {/* Frame number */}
-        <div className="absolute top-3 right-3 bg-black/60 backdrop-blur-sm text-white text-xs font-mono px-3 py-1.5 rounded-full">
-          frame {phases[current]}
-        </div>
 
         {/* Arrow navigation */}
         {currentIndex > 0 && (
           <button
             onClick={prev}
-            className="absolute left-2 top-1/2 -translate-y-1/2 p-2 rounded-full bg-black/50 hover:bg-black/70 text-white transition-colors"
+            className="absolute left-1.5 top-1/2 -translate-y-1/2 p-1.5 rounded-full bg-black/50 hover:bg-black/70 text-white transition-colors"
           >
-            <ChevronLeft size={24} />
+            <ChevronLeft size={20} />
           </button>
         )}
         {currentIndex < PHASE_ORDER.length - 1 && (
           <button
             onClick={next}
-            className="absolute right-2 top-1/2 -translate-y-1/2 p-2 rounded-full bg-black/50 hover:bg-black/70 text-white transition-colors"
+            className="absolute right-1.5 top-1/2 -translate-y-1/2 p-1.5 rounded-full bg-black/50 hover:bg-black/70 text-white transition-colors"
           >
-            <ChevronRight size={24} />
+            <ChevronRight size={20} />
           </button>
         )}
       </div>

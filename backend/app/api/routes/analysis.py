@@ -53,7 +53,7 @@ async def analyze_swing(
     video_dest = VIDEOS_DIR / f"{result.session_id}.{ext}"
     shutil.copy2(str(video_data.file_path), str(video_dest))
 
-    # Render and save skeleton-overlay frames for each phase
+    # Render and save skeleton-overlay frames with guide annotations
     session_frames_dir = FRAMES_DIR / result.session_id
     session_frames_dir.mkdir(parents=True, exist_ok=True)
     phase_frames = render_phase_frames(
