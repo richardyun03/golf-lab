@@ -1,6 +1,7 @@
 import shutil
 from pathlib import Path
 
+import cv2
 from fastapi import APIRouter, UploadFile, File, Depends, HTTPException
 from fastapi.responses import FileResponse
 from app.schemas.analysis import AnalysisResponse
@@ -9,11 +10,15 @@ from app.services.swing_analyzer import SwingAnalyzer
 from app.services.storage import AnalysisStorage
 from app.core.dependencies import get_video_processor, get_swing_analyzer, get_storage
 from app.core.config import get_settings
+from ml.swing_analysis.skeleton_renderer import render_phase_frames
 
 router = APIRouter()
 
-VIDEOS_DIR = get_settings().data_dir / "uploads"
+settings = get_settings()
+VIDEOS_DIR = settings.data_dir / "uploads"
+FRAMES_DIR = settings.data_dir / "phase_frames"
 VIDEOS_DIR.mkdir(parents=True, exist_ok=True)
+FRAMES_DIR.mkdir(parents=True, exist_ok=True)
 
 
 @router.post("/", response_model=AnalysisResponse)
@@ -48,6 +53,18 @@ async def analyze_swing(
     video_dest = VIDEOS_DIR / f"{result.session_id}.{ext}"
     shutil.copy2(str(video_data.file_path), str(video_dest))
 
+    # Render and save skeleton-overlay frames for each phase
+    session_frames_dir = FRAMES_DIR / result.session_id
+    session_frames_dir.mkdir(parents=True, exist_ok=True)
+    phase_frames = render_phase_frames(
+        video_data.raw_frames,
+        result.keypoints_by_frame,
+        result.swing_phases,
+    )
+    for phase_name, frame_img in phase_frames.items():
+        out_path = session_frames_dir / f"{phase_name}.jpg"
+        cv2.imwrite(str(out_path), frame_img, [cv2.IMWRITE_JPEG_QUALITY, 90])
+
     storage.save(response)
     return response
 
@@ -66,6 +83,15 @@ async def get_video(session_id: str):
             media_types = {"mp4": "video/mp4", "mov": "video/quicktime", "avi": "video/x-msvideo"}
             return FileResponse(path, media_type=media_types[ext])
     raise HTTPException(status_code=404, detail="Video not found.")
+
+
+@router.get("/{session_id}/frames/{phase}")
+async def get_phase_frame(session_id: str, phase: str):
+    """Serve the skeleton-overlay frame for a specific swing phase."""
+    frame_path = FRAMES_DIR / session_id / f"{phase}.jpg"
+    if not frame_path.exists():
+        raise HTTPException(status_code=404, detail="Phase frame not found.")
+    return FileResponse(frame_path, media_type="image/jpeg")
 
 
 @router.get("/{session_id}", response_model=AnalysisResponse)

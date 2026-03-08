@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useParams, Link } from "react-router-dom";
-import { ArrowLeft, Loader2 } from "lucide-react";
+import { ArrowLeft, Loader2, Film, Camera } from "lucide-react";
 import type { AnalysisResponse, SwingPhase } from "../lib/api";
 import { getSession } from "../lib/api";
 import ScoreRing from "../components/ScoreRing";
@@ -8,12 +8,16 @@ import PhaseTimeline from "../components/PhaseTimeline";
 import MetricsPanel from "../components/MetricsPanel";
 import FaultsList from "../components/FaultsList";
 import VideoPlayer from "../components/VideoPlayer";
+import SwingVideoPlayer from "../components/SwingVideoPlayer";
+
+type ViewMode = "frames" | "video";
 
 export default function AnalysisPage() {
   const { sessionId } = useParams<{ sessionId: string }>();
   const [data, setData] = useState<AnalysisResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [activePhase, setActivePhase] = useState<SwingPhase | null>(null);
+  const [viewMode, setViewMode] = useState<ViewMode>("frames");
 
   useEffect(() => {
     if (!sessionId) return;
@@ -44,8 +48,6 @@ export default function AnalysisPage() {
     );
   }
 
-  // For now, video URL won't be available from API (we'd need to serve it)
-  // We'll show a placeholder. In production, the API would return a video URL.
   const videoUrl = `/api/v1/analysis/${sessionId}/video`;
 
   return (
@@ -62,8 +64,8 @@ export default function AnalysisPage() {
           <h1 className="text-2xl font-bold text-white">Swing Analysis</h1>
           <p className="text-gray-500 text-sm">
             Session {sessionId?.slice(0, 8)} &middot;{" "}
-            {data.video_duration_seconds.toFixed(1)}s &middot; {data.fps.toFixed(0)}{" "}
-            fps &middot; {data.frame_count} frames
+            {data.video_duration_seconds.toFixed(1)}s &middot;{" "}
+            {data.fps.toFixed(0)} fps &middot; {data.frame_count} frames
           </p>
         </div>
         <ScoreRing score={data.overall_score} />
@@ -81,17 +83,53 @@ export default function AnalysisPage() {
 
       {/* Main content grid */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-        {/* Left: Video */}
+        {/* Left column */}
         <div className="lg:col-span-2">
-          <div className="bg-gray-900/50 rounded-2xl p-4">
-            <VideoPlayer
-              videoUrl={videoUrl}
-              fps={data.fps}
-              phases={data.swing_phases}
-              frameCount={data.frame_count}
-              activePhase={activePhase}
-              onPhaseSelect={setActivePhase}
-            />
+          {/* View mode toggle */}
+          <div className="flex items-center gap-1 mb-3 bg-gray-900 rounded-lg p-1 w-fit">
+            <button
+              onClick={() => setViewMode("frames")}
+              className={`flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+                viewMode === "frames"
+                  ? "bg-gray-700 text-white"
+                  : "text-gray-400 hover:text-gray-200"
+              }`}
+            >
+              <Camera size={15} />
+              Phase Frames
+            </button>
+            <button
+              onClick={() => setViewMode("video")}
+              className={`flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+                viewMode === "video"
+                  ? "bg-gray-700 text-white"
+                  : "text-gray-400 hover:text-gray-200"
+              }`}
+            >
+              <Film size={15} />
+              Video
+            </button>
+          </div>
+
+          {/* Player area */}
+          <div className="bg-gray-900/50 rounded-2xl p-4 max-w-xl">
+            {viewMode === "frames" ? (
+              <VideoPlayer
+                sessionId={sessionId!}
+                phases={data.swing_phases}
+                activePhase={activePhase}
+                onPhaseSelect={setActivePhase}
+              />
+            ) : (
+              <SwingVideoPlayer
+                videoUrl={videoUrl}
+                fps={data.fps}
+                phases={data.swing_phases}
+                frameCount={data.frame_count}
+                activePhase={activePhase}
+                onPhaseSelect={setActivePhase}
+              />
+            )}
           </div>
 
           {/* Summary */}
