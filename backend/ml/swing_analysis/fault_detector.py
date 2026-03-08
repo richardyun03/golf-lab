@@ -42,7 +42,7 @@ def _dist(a: tuple, b: tuple) -> float:
     return math.sqrt((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2)
 
 
-MIN_SEGMENT_LENGTH = 0.06  # Skip angle checks if arm/leg segments are shorter than this (foreshortened)
+MIN_SEGMENT_LENGTH = 0.03  # Skip angle checks if arm/leg segments are shorter than this (foreshortened)
 
 
 class PhaseFrames:
@@ -195,6 +195,23 @@ class FaultDetector:
         return faults
 
     # ------------------------------------------------------------------
+    # Shared helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _torso_height(kps: dict[str, PoseKeypoint]) -> float | None:
+        """
+        Torso height: distance from shoulder midpoint to hip midpoint.
+        Visible in every camera angle, unlike hip/shoulder width which
+        collapse in face-on or down-the-line views.
+        """
+        if not _confident(kps, "left_shoulder", "right_shoulder", "left_hip", "right_hip"):
+            return None
+        sm = _midpoint_kp(kps["left_shoulder"], kps["right_shoulder"])
+        hm = _midpoint_kp(kps["left_hip"], kps["right_hip"])
+        return _dist(sm, hm)
+
+    # ------------------------------------------------------------------
     # Individual fault checks
     # ------------------------------------------------------------------
 
@@ -202,35 +219,28 @@ class FaultDetector:
         """
         Detect lateral hip sway during the backswing.
 
-        Averaged measurement: hip midpoint X at address vs top,
-        normalized by hip width (more stable than shoulder width in
-        face-on views where shoulders can appear very narrow).
+        Hip midpoint X shift from address to top, normalized by torso height.
         """
         def hip_x(kps):
             if not _confident(kps, "left_hip", "right_hip"):
                 return None
             return _midpoint_kp(kps["left_hip"], kps["right_hip"])[0]
 
-        def hip_width(kps):
-            if not _confident(kps, "left_hip", "right_hip"):
-                return None
-            return abs(kps["left_hip"].x - kps["right_hip"].x)
-
         addr_hip_x = pf.avg_measurement(SwingPhase.ADDRESS, hip_x)
         top_hip_x = pf.avg_measurement(SwingPhase.TOP, hip_x)
-        addr_hw = pf.avg_measurement(SwingPhase.ADDRESS, hip_width)
+        torso = pf.avg_measurement(SwingPhase.ADDRESS, self._torso_height)
 
-        if addr_hip_x is None or top_hip_x is None or not addr_hw or addr_hw < 0.02:
+        if addr_hip_x is None or top_hip_x is None or not torso or torso < 0.05:
             return None
 
-        normalized_shift = abs(top_hip_x - addr_hip_x) / addr_hw
+        normalized_shift = abs(top_hip_x - addr_hip_x) / torso
 
-        if normalized_shift > 0.15:
-            severity = min(1.0, (normalized_shift - 0.15) / 0.25)
+        if normalized_shift > 0.06:
+            severity = min(1.0, (normalized_shift - 0.06) / 0.10)
             return SwingFault(
                 fault_type="sway",
                 phase=SwingPhase.BACKSWING,
-                description=f"Lateral hip sway detected during backswing ({normalized_shift:.0%} of hip width). Hips are sliding instead of rotating.",
+                description=f"Lateral hip sway detected during backswing ({normalized_shift:.0%} of torso height). Hips are sliding instead of rotating.",
                 severity=severity,
                 correction="Keep your weight on the inside of your trail foot. Feel like your trail hip rotates behind you rather than sliding. Drill: place an alignment stick against your trail hip at address and maintain contact.",
             )
@@ -240,9 +250,7 @@ class FaultDetector:
         """
         Detect early extension (loss of spine angle through impact).
 
-        Compares the spine tilt angle (shoulder midpoint → hip midpoint
-        relative to vertical) at address vs impact, averaged across
-        multi-frame windows.
+        Compares the spine tilt angle at address vs impact.
         """
         def spine_tilt(kps):
             if not _confident(kps, "left_shoulder", "right_shoulder", "left_hip", "right_hip"):
@@ -269,8 +277,8 @@ class FaultDetector:
         spine_loss = addr_spine - impact_spine
         hip_rise = (addr_hip_y - impact_hip_y) if (addr_hip_y and impact_hip_y) else 0
 
-        if spine_loss > 8 or hip_rise > 0.03:
-            severity = min(1.0, max(spine_loss / 20.0, hip_rise / 0.06))
+        if spine_loss > 5 or hip_rise > 0.02:
+            severity = min(1.0, max(spine_loss / 15.0, hip_rise / 0.05))
             return SwingFault(
                 fault_type="early_extension",
                 phase=SwingPhase.DOWNSWING,
@@ -284,15 +292,18 @@ class FaultDetector:
         """
         Detect chicken wing (lead arm collapse post-impact).
 
-        Averages the lead elbow angle across the follow-through window.
-        Extended arm = ~170-180 deg. Below 150 = chicken wing.
+        Lead elbow angle at follow-through. Extended = ~170-180 deg.
+        Skipped when the arm is foreshortened (segments shorter than 20%
+        of torso height — arm is pointing toward/away from camera).
         """
+        torso = pf.avg_measurement(SwingPhase.FOLLOW_THROUGH, self._torso_height)
+        min_seg = max(MIN_SEGMENT_LENGTH, (torso or 0) * 0.40)
+
         def lead_elbow_angle(kps):
             if not _confident(kps, "left_shoulder", "left_elbow", "left_wrist"):
                 return None
             s, e, w = _pt(kps["left_shoulder"]), _pt(kps["left_elbow"]), _pt(kps["left_wrist"])
-            # Skip if arm is foreshortened (segments too short in 2D)
-            if _dist(s, e) < MIN_SEGMENT_LENGTH or _dist(e, w) < MIN_SEGMENT_LENGTH:
+            if _dist(s, e) < min_seg or _dist(e, w) < min_seg:
                 return None
             return _angle_deg(s, e, w)
 
@@ -300,8 +311,8 @@ class FaultDetector:
         if angle is None:
             return None
 
-        if angle < 150:
-            severity = min(1.0, (150 - angle) / 40.0)
+        if angle < 155:
+            severity = min(1.0, (155 - angle) / 35.0)
             return SwingFault(
                 fault_type="chicken_wing",
                 phase=SwingPhase.FOLLOW_THROUGH,
@@ -315,20 +326,20 @@ class FaultDetector:
         """
         Detect casting (early release of lag in the downswing).
 
-        Compares the trail elbow angle at top vs mid-downswing.
-        Good lag = compact elbow maintained. Casting = early straightening.
+        Trail elbow angle change from top to mid-downswing.
         """
+        torso = pf.avg_measurement(SwingPhase.TOP, self._torso_height)
+        min_seg = max(MIN_SEGMENT_LENGTH, (torso or 0) * 0.40)
+
         def trail_elbow_angle(kps):
             if not _confident(kps, "right_shoulder", "right_elbow", "right_wrist"):
                 return None
             s, e, w = _pt(kps["right_shoulder"]), _pt(kps["right_elbow"]), _pt(kps["right_wrist"])
-            if _dist(s, e) < MIN_SEGMENT_LENGTH or _dist(e, w) < MIN_SEGMENT_LENGTH:
+            if _dist(s, e) < min_seg or _dist(e, w) < min_seg:
                 return None
             return _angle_deg(s, e, w)
 
         top_angle = pf.avg_measurement(SwingPhase.TOP, trail_elbow_angle)
-
-        # Mid-downswing: measure at the downswing representative frame
         ds_angle = pf.avg_measurement(SwingPhase.DOWNSWING, trail_elbow_angle)
 
         if top_angle is None or ds_angle is None:
@@ -336,8 +347,8 @@ class FaultDetector:
 
         angle_release = ds_angle - top_angle
 
-        if angle_release > 30:
-            severity = min(1.0, (angle_release - 30) / 30.0)
+        if angle_release > 20:
+            severity = min(1.0, (angle_release - 20) / 25.0)
             return SwingFault(
                 fault_type="casting",
                 phase=SwingPhase.DOWNSWING,
@@ -351,20 +362,13 @@ class FaultDetector:
         """
         Detect excessive head movement from address through impact.
 
-        Averaged nose position at address vs impact, normalized by hip width
-        (stable across camera angles, unlike shoulder width in face-on views).
+        Nose position shift normalized by torso height.
         """
         def nose_pos(kps):
             if not _confident(kps, "nose"):
                 return None
             return _pt(kps["nose"])
 
-        def hip_width(kps):
-            if not _confident(kps, "left_hip", "right_hip"):
-                return None
-            return abs(kps["left_hip"].x - kps["right_hip"].x)
-
-        # Average nose position across windows
         addr_frames = pf.window_frames(SwingPhase.ADDRESS)
         impact_frames = pf.window_frames(SwingPhase.IMPACT)
 
@@ -386,22 +390,22 @@ class FaultDetector:
             np.mean([p[1] for p in impact_positions]),
         )
 
-        hw = pf.avg_measurement(SwingPhase.ADDRESS, hip_width)
-        if not hw or hw < 0.02:
+        torso = pf.avg_measurement(SwingPhase.ADDRESS, self._torso_height)
+        if not torso or torso < 0.05:
             return None
 
-        lateral_shift = abs(impact_nose[0] - addr_nose[0]) / hw
-        vertical_shift = abs(impact_nose[1] - addr_nose[1]) / hw
+        lateral_shift = abs(impact_nose[0] - addr_nose[0]) / torso
+        vertical_shift = abs(impact_nose[1] - addr_nose[1]) / torso
         total_movement = math.sqrt(lateral_shift ** 2 + vertical_shift ** 2)
 
-        if total_movement > 0.40:
-            severity = min(1.0, (total_movement - 0.40) / 0.60)
+        if total_movement > 0.15:
+            severity = min(1.0, (total_movement - 0.15) / 0.25)
             direction = "laterally" if lateral_shift > vertical_shift else "vertically (dipping/rising)"
 
             return SwingFault(
                 fault_type="excessive_head_movement",
                 phase=SwingPhase.DOWNSWING,
-                description=f"Excessive head movement detected — head moved {direction} by {total_movement:.0%} of hip width from address to impact.",
+                description=f"Excessive head movement detected — head moved {direction} by {total_movement:.0%} of torso height from address to impact.",
                 severity=severity,
                 correction="Keep your head steady as a pivot point for the swing. A slight rotation is fine, but avoid lateral slides or vertical dips. Drill: have someone hold a hand on your head while you make slow swings.",
             )

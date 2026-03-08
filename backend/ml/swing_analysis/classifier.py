@@ -42,36 +42,31 @@ class SwingPhaseClassifier:
 
         n = len(wrist_y)
         wrist_y_smooth = _smooth(wrist_y, window=7)
+        wrist_y_light = _smooth(wrist_y, 3)
         body_vel_smooth = _smooth(body_vel, window=9)
 
-        # ---- Step 1: Find the swing window via body velocity ----
-        swing_start, swing_end = self._find_swing_window(body_vel_smooth)
+        # ---- Step 1: Find TOP — wrist Y minimum followed by velocity burst ----
+        # The top of backswing = hands at highest point (min wrist Y) that is
+        # followed by a strong velocity increase (the downswing). This
+        # distinguishes it from follow-through (hands also high but velocity
+        # decreasing) and pre-swing motion.
+        top_frame = self._find_top(wrist_y_smooth, body_vel_smooth, n)
 
-        # ---- Step 2: Find TOP — minimum wrist y (hands highest) in swing window ----
-        # Use the first half of the swing window to avoid follow-through minimums
-        swing_mid = swing_start + (swing_end - swing_start) // 2
-        search_region = wrist_y_smooth[swing_start:swing_mid + 1]
-        if len(search_region) > 0:
-            top_frame = swing_start + int(np.argmin(search_region))
-        else:
-            top_frame = swing_start + (swing_end - swing_start) // 4
-
-        # ---- Step 3: Find IMPACT — hands at lowest point after top ----
-        # Impact is where wrist Y peaks (hands drop to ball level then rise
-        # into follow-through). Use light smoothing (3-frame) to preserve
-        # the sharp peak — heavier smoothing shifts it by 1-2 frames.
-        wrist_y_light = _smooth(wrist_y, 3)
-        post_top_wrist = wrist_y_light[top_frame:swing_end]
+        # ---- Step 2: Find IMPACT — hands at lowest point after top ----
+        # Search a limited window after top (max 30 frames = 1s at 30fps)
+        # to avoid latching onto standing-around frames far after the swing.
+        impact_search_end = min(n, top_frame + 30)
+        post_top_wrist = wrist_y_light[top_frame:impact_search_end]
         if len(post_top_wrist) > 0:
             impact_frame = top_frame + int(np.argmax(post_top_wrist))
         else:
             impact_frame = top_frame + 1
 
-        # ---- Step 4: Find ADDRESS — last quiet period before the backswing ----
-        pre_swing_vel = body_vel_smooth[:top_frame]
-        if len(pre_swing_vel) > 5:
+        # ---- Step 3: Find ADDRESS — last quiet period before the backswing ----
+        pre_top_vel = body_vel_smooth[:top_frame]
+        if len(pre_top_vel) > 5:
             quiet_threshold = np.percentile(body_vel_smooth, 30)
-            quiet_frames = np.where(pre_swing_vel <= quiet_threshold)[0]
+            quiet_frames = np.where(pre_top_vel <= quiet_threshold)[0]
             if len(quiet_frames) > 0:
                 gaps = np.diff(quiet_frames)
                 big_gaps = np.where(gaps > 3)[0]
@@ -85,7 +80,7 @@ class SwingPhaseClassifier:
         else:
             address_frame = 0
 
-        # ---- Step 5: Find TAKEAWAY — wrist y starts deviating from address ----
+        # ---- Step 4: Find TAKEAWAY — wrist y starts deviating from address ----
         address_wrist_y = wrist_y_smooth[address_frame]
         deviation_threshold = 0.01
         takeaway_frame = address_frame
@@ -94,12 +89,10 @@ class SwingPhaseClassifier:
                 takeaway_frame = i
                 break
 
-        # ---- Step 6: BACKSWING — wrists clearly moving up ----
+        # ---- Step 5: BACKSWING — wrists clearly moving up ----
         backswing_frame = takeaway_frame + max(1, (top_frame - takeaway_frame) // 3)
 
-        # ---- Step 7: DOWNSWING — body velocity ramps up after top ----
-        # Find where body velocity exceeds the midpoint between top-level
-        # and impact-level velocity (i.e. the swing is actively accelerating).
+        # ---- Step 6: DOWNSWING — body velocity ramps up after top ----
         top_vel = body_vel_smooth[top_frame]
         impact_vel_val = body_vel_smooth[impact_frame]
         ds_threshold = top_vel + (impact_vel_val - top_vel) * 0.5
@@ -109,7 +102,7 @@ class SwingPhaseClassifier:
                 downswing_frame = i
                 break
 
-        # ---- Step 8: FOLLOW-THROUGH — body decelerating after impact ----
+        # ---- Step 7: FOLLOW-THROUGH — body decelerating after impact ----
         post_impact_vel = body_vel_smooth[impact_frame:]
         impact_vel = body_vel_smooth[impact_frame]
         if len(post_impact_vel) > 1 and impact_vel > 0:
@@ -121,7 +114,7 @@ class SwingPhaseClassifier:
         else:
             follow_through_frame = impact_frame + 1
 
-        # ---- Step 9: FINISH — body velocity returns to quiet level ----
+        # ---- Step 8: FINISH — body velocity returns to quiet level ----
         if follow_through_frame < n:
             post_ft_vel = body_vel_smooth[follow_through_frame:]
             quiet_threshold = np.percentile(body_vel_smooth, 30)
@@ -145,6 +138,56 @@ class SwingPhaseClassifier:
         }
 
         return self._enforce_ordering(phases, n)
+
+    def _find_top(self, wrist_y_smooth: np.ndarray, body_vel_smooth: np.ndarray, n: int) -> int:
+        """
+        Find the top of backswing: the wrist Y minimum that is followed
+        by the strongest velocity burst (the downswing).
+
+        This distinguishes the real top from:
+        - Follow-through (hands also high, but velocity is *before* it)
+        - Pre-swing waggles (may have velocity but no preceding wrist Y dip)
+        """
+        # Find candidate frames: local minima of wrist Y below the 40th percentile
+        threshold = np.percentile(wrist_y_smooth, 40)
+        candidates = []
+
+        for i in range(3, n - 3):
+            if (wrist_y_smooth[i] <= threshold
+                    and wrist_y_smooth[i] <= wrist_y_smooth[i - 3]
+                    and wrist_y_smooth[i] <= wrist_y_smooth[i + 3]):
+                candidates.append(i)
+
+        if not candidates:
+            # Fallback: global minimum
+            return int(np.argmin(wrist_y_smooth))
+
+        # Deduplicate: keep only the deepest point in each cluster
+        merged = []
+        cluster = [candidates[0]]
+        for i in range(1, len(candidates)):
+            if candidates[i] - candidates[i - 1] <= 5:
+                cluster.append(candidates[i])
+            else:
+                best = min(cluster, key=lambda f: wrist_y_smooth[f])
+                merged.append(best)
+                cluster = [candidates[i]]
+        merged.append(min(cluster, key=lambda f: wrist_y_smooth[f]))
+
+        # Score each candidate: max body velocity in the 5-20 frames after it
+        best_frame = merged[0]
+        best_score = -1.0
+        for frame in merged:
+            search_start = min(n, frame + 3)
+            search_end = min(n, frame + 25)
+            if search_start >= search_end:
+                continue
+            post_vel = np.max(body_vel_smooth[search_start:search_end])
+            if post_vel > best_score:
+                best_score = post_vel
+                best_frame = frame
+
+        return best_frame
 
     def _find_swing_window(self, body_vel_smooth: np.ndarray) -> tuple[int, int]:
         """
