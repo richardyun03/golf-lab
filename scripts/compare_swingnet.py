@@ -287,10 +287,9 @@ def run_rule_based(video_path: str):
 
 # ── Run SwingNet ─────────────────────────────────────────────────────
 
-def run_swingnet(video_path: str, model: EventDetector, device: torch.device, seq_length: int = 64):
-    """Run SwingNet inference and return event frame predictions with confidences."""
-    images, fps, frame_count = load_video_for_swingnet(video_path)
-
+def _run_swingnet_on_tensor(images: torch.Tensor, model: EventDetector,
+                            device: torch.device, seq_length: int):
+    """Run SwingNet inference on a preprocessed image tensor [1, T, C, H, W]."""
     with torch.no_grad():
         batch = 0
         probs = None
@@ -307,9 +306,15 @@ def run_swingnet(video_path: str, model: EventDetector, device: torch.device, se
                 probs = np.append(probs, batch_probs, 0)
             batch += 1
 
-    # Events: argmax across frames for each event class (columns 0-7, ignoring 8=no-event)
     events = np.argmax(probs, axis=0)[:-1]  # shape (8,)
     confidences = [probs[events[i], i] for i in range(8)]
+    return events, confidences
+
+
+def run_swingnet(video_path: str, model: EventDetector, device: torch.device, seq_length: int = 64):
+    """Run SwingNet inference on full video (no cropping)."""
+    images, fps, frame_count = load_video_for_swingnet(video_path)
+    events, confidences = _run_swingnet_on_tensor(images, model, device, seq_length)
 
     result = {}
     for i in range(8):
@@ -322,15 +327,153 @@ def run_swingnet(video_path: str, model: EventDetector, device: torch.device, se
     return result
 
 
+def _get_person_bbox(keypoints_by_frame):
+    """Get bounding box (normalized coords) of the golfer from pose keypoints."""
+    all_x, all_y = [], []
+    for frame_kps in keypoints_by_frame:
+        for kp in frame_kps:
+            conf = getattr(kp, "confidence", None) or getattr(kp, "visibility", None)
+            if conf is None or conf > 0.3:
+                all_x.append(kp.x)
+                all_y.append(kp.y)
+    if not all_x:
+        return 0.0, 0.0, 1.0, 1.0
+    # Add generous padding (20% of range)
+    x_min, x_max = min(all_x), max(all_x)
+    y_min, y_max = min(all_y), max(all_y)
+    x_range = x_max - x_min
+    y_range = y_max - y_min
+    pad_x = x_range * 0.25
+    pad_y = y_range * 0.15
+    return (
+        max(0.0, x_min - pad_x),
+        max(0.0, y_min - pad_y),
+        min(1.0, x_max + pad_x),
+        min(1.0, y_max + pad_y),
+    )
+
+
+def run_swingnet_cropped(video_path: str, model: EventDetector, device: torch.device,
+                         seq_length: int = 64):
+    """
+    Run SwingNet with pre-processing to match GolfDB training distribution:
+    1. Use MediaPipe to find the golfer's bounding box
+    2. Use rule-based classifier to find the swing window
+    3. Crop spatially around the golfer and temporally to the swing
+    4. Feed the cropped clip to SwingNet
+    """
+    backend_dir = Path(__file__).resolve().parent.parent / "backend"
+    if str(backend_dir) not in sys.path:
+        sys.path.insert(0, str(backend_dir))
+
+    from app.core.config import Settings
+    from ml.pose_estimation.extractor import PoseExtractor
+    from ml.swing_analysis.classifier import SwingPhaseClassifier
+    from app.services.video_processor import VideoData
+
+    settings = Settings()
+    extractor = PoseExtractor(settings)
+    classifier = SwingPhaseClassifier(settings)
+
+    # Load raw frames
+    cap = cv2.VideoCapture(video_path)
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    raw_frames = []
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        raw_frames.append(frame)
+    cap.release()
+
+    import uuid, asyncio
+    video_data = VideoData(
+        session_id=str(uuid.uuid4()), file_path=Path(video_path),
+        fps=fps, frame_count=len(raw_frames),
+        duration_seconds=len(raw_frames) / fps if fps > 0 else 0,
+        width=width, height=height, raw_frames=raw_frames,
+    )
+
+    # Get pose keypoints and classify phases
+    keypoints = asyncio.run(extractor.extract(video_data))
+    phases = classifier.classify(keypoints)
+    phase_dict = {p.name: f for p, f in phases.items()}
+
+    # --- Temporal crop: trim to swing window with padding ---
+    address_frame = phase_dict.get("ADDRESS", 0)
+    finish_frame = phase_dict.get("FINISH", len(raw_frames) - 1)
+    pad_frames = int(fps * 0.3)  # 0.3s padding on each side
+    trim_start = max(0, address_frame - pad_frames)
+    trim_end = min(len(raw_frames) - 1, finish_frame + pad_frames)
+
+    # --- Spatial crop: bounding box around golfer ---
+    x_min, y_min, x_max, y_max = _get_person_bbox(keypoints)
+    px_x1 = int(x_min * width)
+    px_y1 = int(y_min * height)
+    px_x2 = int(x_max * width)
+    px_y2 = int(y_max * height)
+
+    # Make it square (SwingNet expects square input)
+    crop_w = px_x2 - px_x1
+    crop_h = px_y2 - px_y1
+    if crop_w > crop_h:
+        diff = crop_w - crop_h
+        px_y1 = max(0, px_y1 - diff // 2)
+        px_y2 = min(height, px_y2 + (diff - diff // 2))
+    elif crop_h > crop_w:
+        diff = crop_h - crop_w
+        px_x1 = max(0, px_x1 - diff // 2)
+        px_x2 = min(width, px_x2 + (diff - diff // 2))
+
+    # Preprocess cropped frames for SwingNet
+    input_size = 160
+    cropped_images = []
+    for i in range(trim_start, trim_end + 1):
+        frame = raw_frames[i]
+        cropped = frame[px_y1:px_y2, px_x1:px_x2]
+        if cropped.size == 0:
+            cropped = frame  # fallback
+        resized = cv2.resize(cropped, (input_size, input_size))
+        cropped_images.append(cv2.cvtColor(resized, cv2.COLOR_BGR2RGB))
+
+    sample = {"images": np.asarray(cropped_images), "labels": np.zeros(len(cropped_images))}
+    transform = transforms.Compose([
+        ToTensor(),
+        Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+    ])
+    sample = transform(sample)
+    images = sample["images"].unsqueeze(0)
+
+    # Run SwingNet on the cropped clip
+    events, confidences = _run_swingnet_on_tensor(images, model, device, seq_length)
+
+    # Map frame indices back to original video coordinates
+    result = {}
+    for i in range(8):
+        phase_name = SWINGNET_TO_OURS[i]
+        original_frame = int(events[i]) + trim_start
+        result[phase_name] = {
+            "frame": original_frame,
+            "confidence": float(confidences[i]),
+            "swingnet_name": SWINGNET_EVENTS[i],
+        }
+    return result, phase_dict
+
+
 # ── Visualization ────────────────────────────────────────────────────
 
-def save_phase_grid(video_path: str, sn_result: dict, rb_result: dict | None,
+def save_phase_grid(video_path: str, methods: list[tuple[str, dict]],
                     output_path: Path):
-    """Save a grid image showing detected phase frames from both methods."""
+    """
+    Save a grid image showing detected phase frames from multiple methods.
+    methods: list of (method_name, result_dict) tuples.
+    result_dict values can be either:
+      - {"frame": int, "confidence": float, ...}  (SwingNet style)
+      - int  (rule-based style, just frame index)
+    """
     cap = cv2.VideoCapture(video_path)
-    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-
-    # Read all frames
     frames = []
     while True:
         ret, frame = cap.read()
@@ -342,41 +485,29 @@ def save_phase_grid(video_path: str, sn_result: dict, rb_result: dict | None,
     if not frames:
         return
 
-    # Determine grid layout: 1 or 2 rows x 8 columns
-    n_phases = len(OUR_PHASES)
-    has_rb = rb_result is not None
-    n_rows = 2 if has_rb else 1
+    n_methods = len(methods)
+    cols_per_row = 4
 
-    # Layout: 2 rows of 4 phases per method block
     sample = frames[0]
     aspect = sample.shape[1] / sample.shape[0]
     thumb_w = 400
     thumb_h = int(thumb_w / aspect)
-    label_h = 70  # space for text above each thumbnail
-    row_label_h = 50  # space for method name header
-    cols_per_row = 4
+    label_h = 70
+    row_label_h = 50
 
     block_rows = 2  # 8 phases across 2 rows of 4
     canvas_w = cols_per_row * thumb_w
     block_h = row_label_h + block_rows * (thumb_h + label_h)
-    canvas_h = n_rows * block_h + 20
+    canvas_h = n_methods * block_h + 20
 
     canvas = np.zeros((canvas_h, canvas_w, 3), dtype=np.uint8)
-    canvas[:] = 40  # dark gray background
+    canvas[:] = 40
 
     font = cv2.FONT_HERSHEY_SIMPLEX
 
-    for row in range(n_rows):
-        if row == 0:
-            method_name = "SwingNet"
-            result = sn_result
-        else:
-            method_name = "Rule-based"
-            result = rb_result
-
+    for row, (method_name, result) in enumerate(methods):
         block_y = row * block_h
 
-        # Method header
         cv2.putText(canvas, method_name, (15, block_y + 35),
                     font, 1.2, (100, 200, 255), 2)
 
@@ -387,19 +518,20 @@ def save_phase_grid(video_path: str, sn_result: dict, rb_result: dict | None,
             x = grid_col * thumb_w
             y = block_y + row_label_h + grid_row * (thumb_h + label_h)
 
-            if row == 0:
-                frame_idx = result[phase]["frame"]
-                conf = result[phase]["confidence"]
+            val = result.get(phase)
+            if isinstance(val, dict):
+                frame_idx = val["frame"]
+                conf = val.get("confidence")
                 label_text = f"{phase}  frame {frame_idx}"
-                conf_text = f"confidence: {conf:.3f}"
+                conf_text = f"confidence: {conf:.3f}" if conf is not None else ""
             else:
-                frame_idx = result.get(phase, 0)
+                frame_idx = val if val is not None else 0
+                conf = None
                 label_text = f"{phase}  frame {frame_idx}"
                 conf_text = ""
 
             frame_idx = max(0, min(frame_idx, len(frames) - 1))
 
-            # Phase label
             cv2.putText(canvas, label_text, (x + 8, y + 25),
                         font, 0.7, (255, 255, 255), 2)
             if conf_text:
@@ -407,7 +539,6 @@ def save_phase_grid(video_path: str, sn_result: dict, rb_result: dict | None,
                 cv2.putText(canvas, conf_text, (x + 8, y + 55),
                             font, 0.65, color, 2)
 
-            # Thumbnail
             thumb = cv2.resize(frames[frame_idx], (thumb_w - 6, thumb_h - 6))
             ty = y + label_h
             canvas[ty:ty + thumb_h - 6, x + 3:x + thumb_w - 3] = thumb
@@ -429,6 +560,8 @@ def main():
     parser.add_argument("--seq-length", type=int, default=64)
     parser.add_argument("--skip-rule-based", action="store_true",
                         help="Skip rule-based (much faster, SwingNet only)")
+    parser.add_argument("--crop", action="store_true",
+                        help="Also run SwingNet with pose-guided cropping")
     parser.add_argument("--output-dir", type=str, default="output/swingnet_comparison",
                         help="Directory to save visual output")
     args = parser.parse_args()
@@ -471,42 +604,54 @@ def main():
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"{'Video':<20} {'Phase':<18} {'SwingNet':>10} {'Rule-based':>12} {'Diff':>6}  {'SN Conf':>8}")
-    print("-" * 80)
+    header = f"{'Phase':<18} {'SN Raw':>8} {'Conf':>6}"
+    if args.crop:
+        header += f"  {'SN Crop':>8} {'Conf':>6}"
+    if not args.skip_rule_based:
+        header += f"  {'RuleBsd':>8}"
+    print(header)
+    print("-" * len(header))
 
     for video_path in videos:
         print(f"\n{video_path.name}")
-        print("-" * 80)
+        print("-" * len(header))
 
-        # SwingNet
-        sn_result = run_swingnet(str(video_path), model, device, args.seq_length)
+        # SwingNet (raw, full video)
+        sn_raw = run_swingnet(str(video_path), model, device, args.seq_length)
 
-        # Rule-based
-        if not args.skip_rule_based:
+        # SwingNet (cropped) — also gives us rule-based for free
+        sn_crop = None
+        rb_result = None
+        if args.crop:
+            sn_crop, rb_result = run_swingnet_cropped(
+                str(video_path), model, device, args.seq_length)
+        elif not args.skip_rule_based:
             rb_result = run_rule_based(str(video_path))
-        else:
-            rb_result = None
 
         for phase in OUR_PHASES:
-            sn = sn_result[phase]
-            sn_frame = sn["frame"]
-            sn_conf = sn["confidence"]
-            sn_name = sn["swingnet_name"]
+            raw = sn_raw[phase]
+            line = f"  {phase:<18} {raw['frame']:>8} {raw['confidence']:>6.3f}"
 
-            if rb_result and phase in rb_result:
-                rb_frame = rb_result[phase]
-                diff = sn_frame - rb_frame
-                diff_str = f"{diff:+d}"
-            else:
-                rb_frame = "-"
-                diff_str = "-"
+            if sn_crop:
+                crop = sn_crop[phase]
+                line += f"  {crop['frame']:>8} {crop['confidence']:>6.3f}"
 
-            print(f"  {phase:<18} {sn_frame:>10}   {str(rb_frame):>10} {diff_str:>6}  {sn_conf:>8.3f}  ({sn_name})")
+            if rb_result:
+                rb_frame = rb_result.get(phase, "-")
+                line += f"  {str(rb_frame):>8}"
+
+            print(line)
 
         # Save visual grid
+        grid_methods = [("SwingNet (raw)", sn_raw)]
+        if sn_crop:
+            grid_methods.append(("SwingNet (cropped)", sn_crop))
+        if rb_result:
+            grid_methods.append(("Rule-based", rb_result))
+
         stem = video_path.stem
         grid_path = output_dir / f"{stem}_phases.png"
-        save_phase_grid(str(video_path), sn_result, rb_result, grid_path)
+        save_phase_grid(str(video_path), grid_methods, grid_path)
         print(f"  -> Saved: {grid_path}")
 
     print("\n" + "=" * 80)
