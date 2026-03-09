@@ -143,3 +143,11 @@ export async function getTourComparison(
   if (!res.ok) throw new Error("Tour comparison not available");
   return res.json();
 }
+
+export function getComparisonFrameUrl(
+  sessionId: string,
+  proId: string,
+  phase: SwingPhase
+): string {
+  return `${BASE}/${sessionId}/compare/${proId}/frames/${phase}`;
+}

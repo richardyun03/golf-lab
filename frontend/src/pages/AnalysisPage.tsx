@@ -181,7 +181,7 @@ export default function AnalysisPage() {
           {rightTab === "metrics" ? (
             <MetricsPanel metrics={data.metrics} />
           ) : (
-            <ProComparison sessionId={sessionId!} />
+            <ProComparison sessionId={sessionId!} phases={data.swing_phases} />
           )}
         </div>
       </div>
