@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useParams, Link } from "react-router-dom";
-import { ArrowLeft, Loader2, Film, Camera } from "lucide-react";
+import { ArrowLeft, Loader2, Film, Camera, Users } from "lucide-react";
 import type { AnalysisResponse, SwingPhase } from "../lib/api";
 import { getSession } from "../lib/api";
 import ScoreRing from "../components/ScoreRing";
@@ -9,8 +9,10 @@ import MetricsPanel from "../components/MetricsPanel";
 import FaultsList from "../components/FaultsList";
 import VideoPlayer from "../components/VideoPlayer";
 import SwingVideoPlayer from "../components/SwingVideoPlayer";
+import ProComparison from "../components/ProComparison";
 
 type ViewMode = "frames" | "video";
+type RightTab = "metrics" | "pro";
 
 export default function AnalysisPage() {
   const { sessionId } = useParams<{ sessionId: string }>();
@@ -18,6 +20,7 @@ export default function AnalysisPage() {
   const [error, setError] = useState<string | null>(null);
   const [activePhase, setActivePhase] = useState<SwingPhase | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>("frames");
+  const [rightTab, setRightTab] = useState<RightTab>("metrics");
 
   useEffect(() => {
     if (!sessionId) return;
@@ -149,12 +152,37 @@ export default function AnalysisPage() {
           </div>
         </div>
 
-        {/* Right: Metrics */}
+        {/* Right column: Metrics / Pro Comparison tabs */}
         <div>
-          <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-3">
-            Metrics
-          </h2>
-          <MetricsPanel metrics={data.metrics} />
+          <div className="flex items-center gap-1 mb-3 bg-gray-900 rounded-lg p-1">
+            <button
+              onClick={() => setRightTab("metrics")}
+              className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-md text-sm font-medium transition-colors ${
+                rightTab === "metrics"
+                  ? "bg-gray-700 text-white"
+                  : "text-gray-400 hover:text-gray-200"
+              }`}
+            >
+              Metrics
+            </button>
+            <button
+              onClick={() => setRightTab("pro")}
+              className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-md text-sm font-medium transition-colors ${
+                rightTab === "pro"
+                  ? "bg-gray-700 text-white"
+                  : "text-gray-400 hover:text-gray-200"
+              }`}
+            >
+              <Users size={14} />
+              Pro Compare
+            </button>
+          </div>
+
+          {rightTab === "metrics" ? (
+            <MetricsPanel metrics={data.metrics} />
+          ) : (
+            <ProComparison sessionId={sessionId!} />
+          )}
         </div>
       </div>
     </div>

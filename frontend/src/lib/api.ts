@@ -93,3 +93,53 @@ export async function listSessions(): Promise<SessionSummary[]> {
   if (!res.ok) throw new Error("Failed to load sessions");
   return res.json();
 }
+
+// ── Pro Comparison ──────────────────────────────────────────────────
+
+export interface ProProfile {
+  pro_id: string;
+  name: string;
+  tour: string;
+  swing_style: string;
+  known_for: string[];
+  thumbnail_url?: string;
+}
+
+export interface SwingMatchResult {
+  pro: ProProfile;
+  similarity_score: number;
+  matching_phases: string[];
+  key_similarities: string[];
+  key_differences: string[];
+}
+
+export interface ComparisonResult {
+  session_id: string;
+  top_matches: SwingMatchResult[];
+  primary_match: SwingMatchResult;
+  swing_archetype: string;
+}
+
+export interface TourMetricComparison {
+  user: number;
+  tour_avg: number;
+  diff: number;
+  label: string;
+}
+
+const COMPARISON_BASE = "/api/v1/comparison";
+
+export async function getProComparison(sessionId: string): Promise<ComparisonResult> {
+  const res = await fetch(`${COMPARISON_BASE}/${sessionId}`);
+  if (!res.ok) throw new Error("Comparison not available");
+  return res.json();
+}
+
+export async function getTourComparison(
+  sessionId: string,
+  tour: string = "PGA"
+): Promise<Record<string, TourMetricComparison>> {
+  const res = await fetch(`${COMPARISON_BASE}/${sessionId}/tour/${tour}`);
+  if (!res.ok) throw new Error("Tour comparison not available");
+  return res.json();
+}
