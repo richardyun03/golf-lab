@@ -1,18 +1,19 @@
 import json
 import shutil
+from functools import lru_cache
 from pathlib import Path
 
 import cv2
 import numpy as np
 from fastapi import APIRouter, UploadFile, File, Depends, HTTPException
 from fastapi.responses import FileResponse, Response
-from app.schemas.analysis import AnalysisResponse
+from app.schemas.analysis import AnalysisResponse, PoseKeypoint
 from app.services.video_processor import VideoProcessor
 from app.services.swing_analyzer import SwingAnalyzer
 from app.services.storage import AnalysisStorage
 from app.core.dependencies import get_video_processor, get_swing_analyzer, get_storage
 from app.core.config import get_settings
-from ml.swing_analysis.skeleton_renderer import render_phase_frames
+from ml.swing_analysis.skeleton_renderer import draw_skeleton
 from ml.pro_comparison.comparison_renderer import draw_comparison_frame
 from ml.pro_comparison.pro_database import PRO_PROFILES
 
@@ -20,14 +21,46 @@ router = APIRouter()
 
 settings = get_settings()
 VIDEOS_DIR = settings.data_dir / "uploads"
-FRAMES_DIR = settings.data_dir / "phase_frames"
-RAW_FRAMES_DIR = settings.data_dir / "raw_phase_frames"
 KEYPOINTS_DIR = settings.data_dir / "phase_keypoints"
 VIDEOS_DIR.mkdir(parents=True, exist_ok=True)
-FRAMES_DIR.mkdir(parents=True, exist_ok=True)
-RAW_FRAMES_DIR.mkdir(parents=True, exist_ok=True)
 KEYPOINTS_DIR.mkdir(parents=True, exist_ok=True)
 
+
+# ── Helpers ──────────────────────────────────────────────────────────
+
+def _find_video_path(session_id: str) -> Path | None:
+    for ext in ("mp4", "mov", "avi"):
+        path = VIDEOS_DIR / f"{session_id}.{ext}"
+        if path.exists():
+            return path
+    return None
+
+
+def _extract_frame(video_path: Path, frame_idx: int) -> np.ndarray | None:
+    """Extract a single frame from a video file by index."""
+    cap = cv2.VideoCapture(str(video_path))
+    try:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+        ok, frame = cap.read()
+        return frame if ok else None
+    finally:
+        cap.release()
+
+
+def _load_keypoints(session_id: str, phase: str) -> list[PoseKeypoint] | None:
+    kp_path = KEYPOINTS_DIR / session_id / f"{phase}.json"
+    if not kp_path.exists():
+        return None
+    kp_list = json.loads(kp_path.read_text())
+    return [PoseKeypoint(**kp) for kp in kp_list]
+
+
+def _render_to_jpeg(frame: np.ndarray, quality: int = 90) -> bytes:
+    _, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, quality])
+    return buf.tobytes()
+
+
+# ── Routes ───────────────────────────────────────────────────────────
 
 @router.post("/", response_model=AnalysisResponse)
 async def analyze_swing(
@@ -57,31 +90,16 @@ async def analyze_swing(
         frame_count=len(result.keypoints_by_frame),
     )
 
-    # Persist video file for playback
+    # Persist video file
     video_dest = VIDEOS_DIR / f"{result.session_id}.{ext}"
     shutil.copy2(str(video_data.file_path), str(video_dest))
 
-    # Render and save skeleton-overlay frames with guide annotations
-    session_frames_dir = FRAMES_DIR / result.session_id
-    session_frames_dir.mkdir(parents=True, exist_ok=True)
-    phase_frames = render_phase_frames(
-        video_data.raw_frames,
-        result.keypoints_by_frame,
-        result.swing_phases,
-    )
-    for phase_name, frame_img in phase_frames.items():
-        out_path = session_frames_dir / f"{phase_name}.jpg"
-        cv2.imwrite(str(out_path), frame_img, [cv2.IMWRITE_JPEG_QUALITY, 90])
-
-    # Save raw phase frames and keypoints for on-demand comparison rendering
-    raw_dir = RAW_FRAMES_DIR / result.session_id
-    raw_dir.mkdir(parents=True, exist_ok=True)
+    # Persist keypoints per phase (tiny JSON files — only data we store per session)
     kp_dir = KEYPOINTS_DIR / result.session_id
     kp_dir.mkdir(parents=True, exist_ok=True)
     for phase, frame_idx in result.swing_phases.items():
         phase_key = phase.value if hasattr(phase, "value") else str(phase)
-        idx = min(frame_idx, len(video_data.raw_frames) - 1)
-        cv2.imwrite(str(raw_dir / f"{phase_key}.jpg"), video_data.raw_frames[idx], [cv2.IMWRITE_JPEG_QUALITY, 95])
+        idx = min(frame_idx, len(result.keypoints_by_frame) - 1)
         kps = result.keypoints_by_frame[idx] if idx < len(result.keypoints_by_frame) else []
         kp_data = [kp.model_dump() for kp in kps]
         (kp_dir / f"{phase_key}.json").write_text(json.dumps(kp_data))
@@ -98,53 +116,82 @@ async def list_sessions(storage: AnalysisStorage = Depends(get_storage)):
 @router.get("/{session_id}/video")
 async def get_video(session_id: str):
     """Serve the uploaded video for playback."""
-    for ext in ("mp4", "mov", "avi"):
-        path = VIDEOS_DIR / f"{session_id}.{ext}"
-        if path.exists():
-            media_types = {"mp4": "video/mp4", "mov": "video/quicktime", "avi": "video/x-msvideo"}
-            return FileResponse(path, media_type=media_types[ext])
-    raise HTTPException(status_code=404, detail="Video not found.")
+    video_path = _find_video_path(session_id)
+    if video_path is None:
+        raise HTTPException(status_code=404, detail="Video not found.")
+    media_types = {"mp4": "video/mp4", "mov": "video/quicktime", "avi": "video/x-msvideo"}
+    ext = video_path.suffix.lstrip(".")
+    return FileResponse(video_path, media_type=media_types.get(ext, "video/mp4"))
 
 
 @router.get("/{session_id}/frames/{phase}")
-async def get_phase_frame(session_id: str, phase: str):
-    """Serve the skeleton-overlay frame for a specific swing phase."""
-    frame_path = FRAMES_DIR / session_id / f"{phase}.jpg"
-    if not frame_path.exists():
-        raise HTTPException(status_code=404, detail="Phase frame not found.")
-    return FileResponse(frame_path, media_type="image/jpeg")
+async def get_phase_frame(
+    session_id: str,
+    phase: str,
+    storage: AnalysisStorage = Depends(get_storage),
+):
+    """Render skeleton-overlay frame on-demand from video + keypoints."""
+    session = storage.get(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found.")
+
+    phase_idx = session.swing_phases.get(phase)
+    if phase_idx is None:
+        raise HTTPException(status_code=404, detail="Phase not found.")
+
+    video_path = _find_video_path(session_id)
+    if video_path is None:
+        raise HTTPException(status_code=404, detail="Video not found.")
+
+    frame = _extract_frame(video_path, phase_idx)
+    if frame is None:
+        raise HTTPException(status_code=500, detail="Could not extract frame.")
+
+    keypoints = _load_keypoints(session_id, phase)
+    if keypoints is None:
+        raise HTTPException(status_code=404, detail="Keypoints not found.")
+
+    rendered = draw_skeleton(frame, keypoints, phase=phase)
+    return Response(content=_render_to_jpeg(rendered), media_type="image/jpeg")
 
 
 @router.get("/{session_id}/compare/{pro_id}/frames/{phase}")
-async def get_comparison_frame(session_id: str, pro_id: str, phase: str):
-    """Render a comparison frame showing user skeleton with pro angle annotations."""
-    # Load raw frame
-    raw_path = RAW_FRAMES_DIR / session_id / f"{phase}.jpg"
-    if not raw_path.exists():
-        raise HTTPException(status_code=404, detail="Raw phase frame not found.")
+async def get_comparison_frame(
+    session_id: str,
+    pro_id: str,
+    phase: str,
+    storage: AnalysisStorage = Depends(get_storage),
+):
+    """Render comparison frame showing user skeleton with pro angle annotations."""
+    session = storage.get(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found.")
 
-    # Load keypoints
-    kp_path = KEYPOINTS_DIR / session_id / f"{phase}.json"
-    if not kp_path.exists():
-        raise HTTPException(status_code=404, detail="Keypoints not found.")
+    phase_idx = session.swing_phases.get(phase)
+    if phase_idx is None:
+        raise HTTPException(status_code=404, detail="Phase not found.")
 
-    # Find pro
+    video_path = _find_video_path(session_id)
+    if video_path is None:
+        raise HTTPException(status_code=404, detail="Video not found.")
+
     pro_data = next((p for p in PRO_PROFILES if p["pro_id"] == pro_id), None)
     if pro_data is None:
         raise HTTPException(status_code=404, detail="Pro not found.")
 
-    from app.schemas.analysis import PoseKeypoint
-    frame = cv2.imread(str(raw_path))
-    kp_list = json.loads(kp_path.read_text())
-    keypoints = [PoseKeypoint(**kp) for kp in kp_list]
+    frame = _extract_frame(video_path, phase_idx)
+    if frame is None:
+        raise HTTPException(status_code=500, detail="Could not extract frame.")
+
+    keypoints = _load_keypoints(session_id, phase)
+    if keypoints is None:
+        raise HTTPException(status_code=404, detail="Keypoints not found.")
 
     rendered = draw_comparison_frame(
         frame, keypoints, phase,
         {**pro_data["metrics"], "_name": pro_data["name"]},
     )
-
-    _, buf = cv2.imencode(".jpg", rendered, [cv2.IMWRITE_JPEG_QUALITY, 90])
-    return Response(content=buf.tobytes(), media_type="image/jpeg")
+    return Response(content=_render_to_jpeg(rendered), media_type="image/jpeg")
 
 
 @router.get("/{session_id}", response_model=AnalysisResponse)
