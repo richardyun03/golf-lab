@@ -324,13 +324,31 @@ class FaultDetector:
 
     def _check_casting(self, pf: PhaseFrames) -> SwingFault | None:
         """
-        Detect casting (early release of lag in the downswing).
+        Detect casting (early release of wrist lag in the downswing).
 
-        Trail elbow angle change from top to mid-downswing.
+        Primary signal: lead wrist hinge angle (elbow→WRIST←index finger).
+        At the top, a properly hinged wrist is ~70-130 degrees. If the wrist
+        unhinge significantly by mid-downswing (before impact), that's casting.
+
+        Secondary signal: trail elbow straightening confirms the diagnosis
+        but isn't used alone (elbow extension ≠ lag loss).
         """
         torso = pf.avg_measurement(SwingPhase.TOP, self._torso_height)
-        min_seg = max(MIN_SEGMENT_LENGTH, (torso or 0) * 0.40)
+        min_seg = max(MIN_SEGMENT_LENGTH, (torso or 0) * 0.30)
 
+        # Primary: lead (left) wrist hinge — the actual lag measurement
+        def lead_wrist_hinge(kps):
+            if not _confident(kps, "left_elbow", "left_wrist", "left_index"):
+                return None
+            e, w, idx = _pt(kps["left_elbow"]), _pt(kps["left_wrist"]), _pt(kps["left_index"])
+            if _dist(e, w) < min_seg or _dist(w, idx) < min_seg:
+                return None
+            return _angle_deg(e, w, idx)
+
+        top_wrist = pf.avg_measurement(SwingPhase.TOP, lead_wrist_hinge)
+        ds_wrist = pf.avg_measurement(SwingPhase.DOWNSWING, lead_wrist_hinge)
+
+        # Secondary: trail elbow angle (supporting evidence)
         def trail_elbow_angle(kps):
             if not _confident(kps, "right_shoulder", "right_elbow", "right_wrist"):
                 return None
@@ -339,23 +357,55 @@ class FaultDetector:
                 return None
             return _angle_deg(s, e, w)
 
-        top_angle = pf.avg_measurement(SwingPhase.TOP, trail_elbow_angle)
-        ds_angle = pf.avg_measurement(SwingPhase.DOWNSWING, trail_elbow_angle)
+        top_elbow = pf.avg_measurement(SwingPhase.TOP, trail_elbow_angle)
+        ds_elbow = pf.avg_measurement(SwingPhase.DOWNSWING, trail_elbow_angle)
 
-        if top_angle is None or ds_angle is None:
-            return None
+        # Evaluate wrist hinge loss (primary)
+        wrist_release = None
+        if top_wrist is not None and ds_wrist is not None:
+            wrist_release = ds_wrist - top_wrist  # positive = wrist unhinging
 
-        angle_release = ds_angle - top_angle
+        # Evaluate elbow release (secondary)
+        elbow_release = None
+        if top_elbow is not None and ds_elbow is not None:
+            elbow_release = ds_elbow - top_elbow  # positive = arm straightening
 
-        if angle_release > 20:
-            severity = min(1.0, (angle_release - 20) / 25.0)
+        # Decision logic: wrist hinge is the true lag indicator
+        if wrist_release is not None and wrist_release > 25:
+            # Wrist hinge opened more than 25 degrees by mid-downswing
+            severity = min(1.0, (wrist_release - 25) / 30.0)
+
+            # Boost severity if elbow is also releasing early
+            if elbow_release is not None and elbow_release > 15:
+                severity = min(1.0, severity + 0.15)
+
+            desc_parts = [
+                f"Casting detected — wrist hinge opened {wrist_release:.0f} degrees by mid-downswing",
+                f"(top: {top_wrist:.0f} deg, downswing: {ds_wrist:.0f} deg).",
+            ]
+            if elbow_release is not None and elbow_release > 15:
+                desc_parts.append(f"Trail elbow also straightened {elbow_release:.0f} deg early.")
+            desc_parts.append("Releasing lag before impact costs clubhead speed.")
+
             return SwingFault(
                 fault_type="casting",
                 phase=SwingPhase.DOWNSWING,
-                description=f"Casting detected — trail elbow released {angle_release:.0f} degrees by mid-downswing (top: {top_angle:.0f} deg, downswing: {ds_angle:.0f} deg). Losing lag early.",
+                description=" ".join(desc_parts),
                 severity=severity,
-                correction="Maintain wrist hinge longer into the downswing. Feel the club staying behind your hands until your lead arm is parallel to the ground. Drill: pump drill — rehearse the transition without releasing.",
+                correction="Maintain wrist hinge longer into the downswing. Feel the butt of the club pointing at the ball until your hands pass your trail thigh. Drill: slow-motion swings pausing at hip height — check that wrists are still fully hinged.",
             )
+
+        # Fallback: if wrist data unavailable, use elbow-only with higher threshold
+        if wrist_release is None and elbow_release is not None and elbow_release > 30:
+            severity = min(1.0, (elbow_release - 30) / 30.0)
+            return SwingFault(
+                fault_type="casting",
+                phase=SwingPhase.DOWNSWING,
+                description=f"Possible casting — trail arm straightened {elbow_release:.0f} degrees by mid-downswing (top: {top_elbow:.0f} deg, downswing: {ds_elbow:.0f} deg). This may indicate early lag release.",
+                severity=severity * 0.8,  # lower confidence without wrist data
+                correction="Maintain wrist hinge longer into the downswing. Feel the butt of the club pointing at the ball until your hands pass your trail thigh. Drill: slow-motion swings pausing at hip height — check that wrists are still fully hinged.",
+            )
+
         return None
 
     def _check_head_movement(self, pf: PhaseFrames) -> SwingFault | None:
