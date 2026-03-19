@@ -194,9 +194,12 @@ class FaultDetector:
 
         checks = [
             self._check_sway,
+            self._check_slide,
             self._check_early_extension,
             self._check_chicken_wing,
             self._check_casting,
+            self._check_over_the_top,
+            self._check_reverse_pivot,
             self._check_head_movement,
         ]
 
@@ -514,5 +517,164 @@ class FaultDetector:
                 description=f"Excessive head movement detected — head moved {direction} by {total_movement:.0%} of torso height from address to impact.",
                 severity=severity,
                 correction="Keep your head steady as a pivot point for the swing. A slight rotation is fine, but avoid lateral slides or vertical dips. Drill: have someone hold a hand on your head while you make slow swings.",
+            )
+        return None
+
+    def _check_over_the_top(self, pf: PhaseFrames) -> SwingFault | None:
+        """
+        Detect over-the-top move (hands move outward in early downswing).
+
+        In a good swing the hands drop *inward* (closer to the body) from
+        top to mid-downswing before moving out through impact.  OTT = the
+        trail hand moves further from the torso centre-line in the early
+        downswing compared to the top.
+
+        Measured as trail-wrist X distance from shoulder midpoint X,
+        normalized by torso height.  An increase means the hands are
+        getting further from the body (moving outward / over the top).
+        """
+        def trail_hand_lateral_offset(kps):
+            if not _confident(kps, "right_wrist", "left_shoulder", "right_shoulder"):
+                return None
+            shoulder_mid_x = _midpoint_kp(kps["left_shoulder"], kps["right_shoulder"])[0]
+            wrist_x = kps["right_wrist"].x
+            return wrist_x - shoulder_mid_x  # positive = wrist is right of centre
+
+        def trail_hand_depth_3d(kps):
+            """Z-distance of trail wrist from shoulder midpoint (3D forward/back)."""
+            rw = kps.get("right_wrist")
+            ls = kps.get("left_shoulder")
+            rs = kps.get("right_shoulder")
+            if not rw or not ls or not rs:
+                return None
+            if rw.z is None or ls.z is None or rs.z is None:
+                return None
+            if rw.confidence < MIN_CONFIDENCE or ls.confidence < MIN_CONFIDENCE or rs.confidence < MIN_CONFIDENCE:
+                return None
+            shoulder_mid_z = (ls.z + rs.z) / 2.0
+            return rw.z - shoulder_mid_z  # negative = hand closer to camera (in front)
+
+        torso = pf.avg_measurement(SwingPhase.TOP, self._torso_height)
+        if not torso or torso < 0.05:
+            return None
+
+        top_offset = pf.avg_measurement(SwingPhase.TOP, trail_hand_lateral_offset)
+        ds_offset = pf.avg_measurement(SwingPhase.DOWNSWING, trail_hand_lateral_offset)
+
+        if top_offset is None or ds_offset is None:
+            return None
+
+        # Outward movement = offset moved further from zero / more positive
+        outward_move = (ds_offset - top_offset) / torso
+
+        # 3D depth check: hands moving forward (toward camera) early is a secondary OTT signal
+        top_depth = pf.avg_measurement(SwingPhase.TOP, trail_hand_depth_3d)
+        ds_depth = pf.avg_measurement(SwingPhase.DOWNSWING, trail_hand_depth_3d)
+        depth_forward = 0.0
+        if top_depth is not None and ds_depth is not None:
+            depth_forward = (top_depth - ds_depth)  # positive = moved toward camera
+
+        if outward_move > 0.06:
+            severity = min(1.0, (outward_move - 0.06) / 0.12)
+            # Boost severity if 3D confirms hands are also coming forward
+            if depth_forward > 0.02:
+                severity = min(1.0, severity + 0.15)
+            return SwingFault(
+                fault_type="over_the_top",
+                phase=SwingPhase.DOWNSWING,
+                description=f"Over-the-top move detected — hands moved outward by {outward_move:.0%} of torso height in early downswing instead of dropping inward.",
+                severity=severity,
+                correction="Feel the hands drop straight down from the top before rotating through. The trail elbow should slot close to the trail hip. Drill: place a headcover just outside the ball — swing without hitting it to train an inside path.",
+            )
+        return None
+
+    def _check_reverse_pivot(self, pf: PhaseFrames) -> SwingFault | None:
+        """
+        Detect reverse pivot (weight moving toward the target on the backswing).
+
+        Two signals:
+        1. Shoulder tilt at top: lead shoulder should be *lower* than trail
+           shoulder (proper tilt toward the ball). Reverse pivot = lead
+           shoulder stays level or higher.
+        2. Hip midpoint shifts toward the target during backswing instead of
+           loading onto the trail side.
+
+        Assumes right-handed golfer with target to the left.
+        """
+        def shoulder_tilt(kps):
+            """Positive = lead shoulder lower than trail (good). Negative = reverse."""
+            if not _confident(kps, "left_shoulder", "right_shoulder"):
+                return None
+            # Y increases downward in image coords, so lead_y > trail_y means lead is lower
+            return kps["left_shoulder"].y - kps["right_shoulder"].y
+
+        def hip_x(kps):
+            if not _confident(kps, "left_hip", "right_hip"):
+                return None
+            return _midpoint_kp(kps["left_hip"], kps["right_hip"])[0]
+
+        torso = pf.avg_measurement(SwingPhase.ADDRESS, self._torso_height)
+        if not torso or torso < 0.05:
+            return None
+
+        addr_tilt = pf.avg_measurement(SwingPhase.ADDRESS, shoulder_tilt)
+        top_tilt = pf.avg_measurement(SwingPhase.TOP, shoulder_tilt)
+
+        addr_hip_x = pf.avg_measurement(SwingPhase.ADDRESS, hip_x)
+        top_hip_x = pf.avg_measurement(SwingPhase.TOP, hip_x)
+
+        if addr_tilt is None or top_tilt is None:
+            return None
+
+        # Normalized tilt change: negative means lead shoulder got relatively higher at top
+        tilt_change = (top_tilt - addr_tilt) / torso
+
+        # Hip shift toward target (leftward = negative X in image)
+        hip_shift = 0.0
+        if addr_hip_x is not None and top_hip_x is not None:
+            hip_shift = (addr_hip_x - top_hip_x) / torso  # positive = hips moved left (toward target)
+
+        if tilt_change < -0.04 or (tilt_change < 0 and hip_shift > 0.05):
+            severity = min(1.0, max(abs(tilt_change) / 0.12, hip_shift / 0.10))
+            return SwingFault(
+                fault_type="reverse_pivot",
+                phase=SwingPhase.BACKSWING,
+                description=f"Reverse pivot detected — weight is shifting toward the target during the backswing instead of loading onto the trail side.",
+                severity=severity,
+                correction="Feel your weight shift into the inside of your trail foot during the backswing. Your lead shoulder should work down toward the ball. Drill: lift your lead foot off the ground at the top — if you can't balance, you're reverse pivoting.",
+            )
+        return None
+
+    def _check_slide(self, pf: PhaseFrames) -> SwingFault | None:
+        """
+        Detect lateral slide toward the target in the downswing.
+
+        Similar to sway but in the opposite direction and phase:
+        hip midpoint X shift from top to impact, normalized by torso height.
+        Excessive lateral movement means the hips are sliding instead of rotating.
+        """
+        def hip_x(kps):
+            if not _confident(kps, "left_hip", "right_hip"):
+                return None
+            return _midpoint_kp(kps["left_hip"], kps["right_hip"])[0]
+
+        top_hip_x = pf.avg_measurement(SwingPhase.TOP, hip_x)
+        impact_hip_x = pf.avg_measurement(SwingPhase.IMPACT, hip_x)
+        torso = pf.avg_measurement(SwingPhase.ADDRESS, self._torso_height)
+
+        if top_hip_x is None or impact_hip_x is None or not torso or torso < 0.05:
+            return None
+
+        # Target is to the left (lower X), so lateral slide = hip_x decreasing
+        lateral_shift = (top_hip_x - impact_hip_x) / torso
+
+        if lateral_shift > 0.15:
+            severity = min(1.0, (lateral_shift - 0.15) / 0.15)
+            return SwingFault(
+                fault_type="slide",
+                phase=SwingPhase.DOWNSWING,
+                description=f"Lateral slide detected — hips shifted {lateral_shift:.0%} of torso height toward the target in the downswing instead of rotating.",
+                severity=severity,
+                correction="Focus on rotating your hips open rather than sliding them laterally. Your lead hip should turn behind you, not slide left. Drill: place an alignment stick in the ground just outside your lead hip at address — don't push past it.",
             )
         return None
