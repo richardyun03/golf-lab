@@ -3,6 +3,7 @@ import Layout from "./components/Layout";
 import UploadPage from "./pages/UploadPage";
 import AnalysisPage from "./pages/AnalysisPage";
 import HistoryPage from "./pages/HistoryPage";
+import TrainingPage from "./pages/TrainingPage";
 
 function App() {
   return (
@@ -11,6 +12,7 @@ function App() {
         <Route path="/" element={<UploadPage />} />
         <Route path="/analysis/:sessionId" element={<AnalysisPage />} />
         <Route path="/history" element={<HistoryPage />} />
+        <Route path="/training" element={<TrainingPage />} />
       </Route>
     </Routes>
   );

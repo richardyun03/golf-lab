@@ -1,10 +1,13 @@
 import type { SwingFault, SwingPhase } from "../lib/api";
 import { PHASE_LABELS } from "../lib/api";
-import { AlertTriangle, ChevronDown, ChevronUp } from "lucide-react";
+import { AlertTriangle, ChevronDown, ChevronUp, Dumbbell } from "lucide-react";
 import { useState } from "react";
+import { Link } from "react-router-dom";
+import { getTrainingPlan } from "../lib/drills";
 
 interface Props {
   faults: SwingFault[];
+  sessionId?: string;
 }
 
 function severityColor(s: number) {
@@ -19,7 +22,7 @@ function severityLabel(s: number) {
   return "Low";
 }
 
-export default function FaultsList({ faults }: Props) {
+export default function FaultsList({ faults, sessionId }: Props) {
   const [expanded, setExpanded] = useState<number | null>(null);
 
   if (faults.length === 0) {
@@ -82,6 +85,15 @@ export default function FaultsList({ faults }: Props) {
                     {(fault.severity * 100).toFixed(0)}%
                   </span>
                 </div>
+                {getTrainingPlan(fault.fault_type) && (
+                  <Link
+                    to={`/training?fault=${fault.fault_type}${sessionId ? `&session=${sessionId}` : ""}`}
+                    className="mt-2 inline-flex items-center gap-1.5 text-xs font-medium text-emerald-400 hover:text-emerald-300 transition-colors"
+                  >
+                    <Dumbbell size={12} />
+                    Practice drills for this fault
+                  </Link>
+                )}
               </div>
             )}
           </div>

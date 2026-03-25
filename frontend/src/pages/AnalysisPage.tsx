@@ -148,7 +148,7 @@ export default function AnalysisPage() {
             <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-3">
               Faults ({data.faults.length})
             </h2>
-            <FaultsList faults={data.faults} />
+            <FaultsList faults={data.faults} sessionId={sessionId} />
           </div>
         </div>
 

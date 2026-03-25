@@ -1,8 +1,9 @@
 import { Link, Outlet, useLocation } from "react-router-dom";
-import { Upload, History } from "lucide-react";
+import { Upload, History, Dumbbell } from "lucide-react";
 
 const NAV = [
   { to: "/", label: "Analyze", icon: Upload },
+  { to: "/training", label: "Training", icon: Dumbbell },
   { to: "/history", label: "History", icon: History },
 ];
 
