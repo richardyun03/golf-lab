@@ -1,6 +1,6 @@
 from app.core.config import Settings
 from app.services.video_processor import VideoData
-from app.schemas.analysis import AnalysisResult, SwingMetrics
+from app.schemas.analysis import AnalysisResult, SwingMetrics, SwingPhase
 from ml.pose_estimation.extractor import PoseExtractor
 from ml.swing_analysis.classifier import SwingPhaseClassifier
 from ml.swing_analysis.fault_detector import FaultDetector
@@ -29,6 +29,7 @@ class SwingAnalyzer:
         metrics = compute_metrics(keypoints_by_frame, swing_phases, video.fps)
         faults = self.fault_detector.detect(keypoints_by_frame, swing_phases, metrics)
         score = self._compute_score(faults, metrics)
+        phase_scores = self._compute_phase_scores(faults)
 
         return AnalysisResult(
             session_id=video.session_id,
@@ -39,6 +40,7 @@ class SwingAnalyzer:
             metrics=metrics,
             faults=faults,
             overall_score=score,
+            phase_scores=phase_scores,
             summary=self._generate_summary(faults, metrics, score),
         )
 
@@ -47,6 +49,20 @@ class SwingAnalyzer:
             return 85.0
         penalty = sum(f.severity * 12 for f in faults)
         return max(0.0, min(100.0, 85.0 - penalty))
+
+    @staticmethod
+    def _compute_phase_scores(faults) -> dict[str, float]:
+        faults_by_phase: dict[str, list] = {}
+        for f in faults:
+            key = f.phase.value if hasattr(f.phase, "value") else str(f.phase)
+            faults_by_phase.setdefault(key, []).append(f)
+
+        phase_scores = {}
+        for phase in SwingPhase:
+            phase_faults = faults_by_phase.get(phase.value, [])
+            penalty = sum(f.severity * 12 for f in phase_faults)
+            phase_scores[phase.value] = max(0.0, min(100.0, 85.0 - penalty))
+        return phase_scores
 
     def _generate_summary(self, faults, metrics, score) -> str:
         parts = [f"Score: {score:.0f}/100."]

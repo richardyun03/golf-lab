@@ -60,6 +60,7 @@ class AnalysisResult(BaseModel):
     metrics: SwingMetrics
     faults: list[SwingFault]
     overall_score: float  # 0-100
+    phase_scores: dict[str, float] = {}  # phase -> 0-100 score
     summary: str
 
 
@@ -72,5 +73,16 @@ class AnalysisResponse(BaseModel):
     metrics: SwingMetrics
     faults: list[SwingFault]
     overall_score: float
+    phase_scores: dict[str, float] = {}
     summary: str
     frame_count: int
+
+
+class SessionTrendPoint(BaseModel):
+    session_id: str
+    created_at: str
+    overall_score: float
+    phase_scores: dict[str, float]
+    metrics: SwingMetrics
+    fault_count: int
+    fault_types: list[str]

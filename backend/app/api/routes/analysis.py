@@ -7,7 +7,7 @@ import cv2
 import numpy as np
 from fastapi import APIRouter, UploadFile, File, Depends, HTTPException
 from fastapi.responses import FileResponse, Response
-from app.schemas.analysis import AnalysisResponse, PoseKeypoint
+from app.schemas.analysis import AnalysisResponse, PoseKeypoint, SessionTrendPoint
 from app.services.video_processor import VideoProcessor
 from app.services.swing_analyzer import SwingAnalyzer
 from app.services.storage import AnalysisStorage
@@ -86,6 +86,7 @@ async def analyze_swing(
         metrics=result.metrics,
         faults=result.faults,
         overall_score=result.overall_score,
+        phase_scores=result.phase_scores,
         summary=result.summary,
         frame_count=len(result.keypoints_by_frame),
     )
@@ -111,6 +112,11 @@ async def analyze_swing(
 @router.get("/sessions", response_model=list[dict])
 async def list_sessions(storage: AnalysisStorage = Depends(get_storage)):
     return storage.list_sessions()
+
+
+@router.get("/sessions/trends", response_model=list[SessionTrendPoint])
+async def get_session_trends(storage: AnalysisStorage = Depends(get_storage)):
+    return storage.list_sessions_with_metrics()
 
 
 @router.get("/{session_id}/video")

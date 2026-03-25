@@ -60,6 +60,7 @@ export interface AnalysisResponse {
   metrics: SwingMetrics;
   faults: SwingFault[];
   overall_score: number;
+  phase_scores?: Record<string, number>;
   summary: string;
   frame_count: number;
 }
@@ -91,6 +92,22 @@ export async function getSession(id: string): Promise<AnalysisResponse> {
 export async function listSessions(): Promise<SessionSummary[]> {
   const res = await fetch(`${BASE}/sessions`);
   if (!res.ok) throw new Error("Failed to load sessions");
+  return res.json();
+}
+
+export interface SessionTrendPoint {
+  session_id: string;
+  created_at: string;
+  overall_score: number;
+  phase_scores: Record<string, number>;
+  metrics: SwingMetrics;
+  fault_count: number;
+  fault_types: string[];
+}
+
+export async function getSessionTrends(): Promise<SessionTrendPoint[]> {
+  const res = await fetch(`${BASE}/sessions/trends`);
+  if (!res.ok) throw new Error("Failed to load trends");
   return res.json();
 }
 

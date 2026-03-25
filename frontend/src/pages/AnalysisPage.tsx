@@ -10,6 +10,7 @@ import FaultsList from "../components/FaultsList";
 import VideoPlayer from "../components/VideoPlayer";
 import SwingVideoPlayer from "../components/SwingVideoPlayer";
 import ProComparison from "../components/ProComparison";
+import PhaseScoreCard from "../components/PhaseScoreCard";
 
 type ViewMode = "frames" | "video";
 type RightTab = "metrics" | "pro";
@@ -75,13 +76,18 @@ export default function AnalysisPage() {
       </div>
 
       {/* Phase timeline */}
-      <div className="mb-8">
+      <div className="mb-4">
         <PhaseTimeline
           phases={data.swing_phases}
           frameCount={data.frame_count}
           activePhase={activePhase}
           onSelect={setActivePhase}
         />
+      </div>
+
+      {/* Phase grades */}
+      <div className="mb-8">
+        <PhaseScoreCard phaseScores={data.phase_scores} />
       </div>
 
       {/* Main content grid */}
