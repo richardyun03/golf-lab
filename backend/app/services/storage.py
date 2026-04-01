@@ -74,6 +74,7 @@ class AnalysisStorage:
             results.append(SessionTrendPoint(
                 session_id=r["session_id"],
                 created_at=r["created_at"],
+                club_type=data.get("club_type"),
                 overall_score=data.get("overall_score", 0),
                 phase_scores=phase_scores,
                 metrics=SwingMetrics(**data.get("metrics", {})),

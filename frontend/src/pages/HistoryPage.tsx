@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { Clock, ArrowRight, Loader2, TrendingUp } from "lucide-react";
-import type { SessionSummary, SessionTrendPoint } from "../lib/api";
-import { listSessions, getSessionTrends } from "../lib/api";
+import type { SessionSummary, SessionTrendPoint, ClubType } from "../lib/api";
+import { listSessions, getSessionTrends, CLUB_LABELS } from "../lib/api";
 import TrendCharts from "../components/TrendCharts";
 
 export default function HistoryPage() {
@@ -21,8 +21,9 @@ export default function HistoryPage() {
       .finally(() => setLoading(false));
   }, []);
 
-  // Build a score lookup from trends data
+  // Build lookups from trends data
   const scoreMap = new Map(trends.map((t) => [t.session_id, t.overall_score]));
+  const clubMap = new Map(trends.map((t) => [t.session_id, t.club_type]));
 
   if (loading) {
     return (
@@ -75,6 +76,7 @@ export default function HistoryPage() {
             <div className="space-y-2">
               {sessions.map((s) => {
                 const score = scoreMap.get(s.session_id);
+                const club = clubMap.get(s.session_id);
                 return (
                   <Link
                     key={s.session_id}
@@ -98,6 +100,11 @@ export default function HistoryPage() {
                       <div>
                         <p className="text-white font-medium text-sm">
                           Session {s.session_id.slice(0, 8)}
+                          {club && (
+                            <span className="ml-2 text-xs text-gray-500 bg-gray-800 px-1.5 py-0.5 rounded">
+                              {CLUB_LABELS[club as ClubType] ?? club}
+                            </span>
+                          )}
                         </p>
                         <p className="text-gray-500 text-xs mt-0.5">
                           {new Date(s.created_at).toLocaleString()}

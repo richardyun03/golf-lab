@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import { ArrowLeft, Loader2, Film, Camera, Users } from "lucide-react";
 import type { AnalysisResponse, SwingPhase } from "../lib/api";
-import { getSession } from "../lib/api";
+import { getSession, CLUB_LABELS, type ClubType } from "../lib/api";
 import ScoreRing from "../components/ScoreRing";
 import PhaseTimeline from "../components/PhaseTimeline";
 import MetricsPanel from "../components/MetricsPanel";
@@ -67,8 +67,11 @@ export default function AnalysisPage() {
         <div className="flex-1">
           <h1 className="text-2xl font-bold text-white">Swing Analysis</h1>
           <p className="text-gray-500 text-sm">
-            Session {sessionId?.slice(0, 8)} &middot;{" "}
-            {data.video_duration_seconds.toFixed(1)}s &middot;{" "}
+            Session {sessionId?.slice(0, 8)}
+            {data.club_type && (
+              <> &middot; {CLUB_LABELS[data.club_type as ClubType] ?? data.club_type}</>
+            )}
+            {" "}&middot; {data.video_duration_seconds.toFixed(1)}s &middot;{" "}
             {data.fps.toFixed(0)} fps &middot; {data.frame_count} frames
           </p>
         </div>

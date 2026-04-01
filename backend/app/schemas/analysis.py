@@ -3,6 +3,17 @@ from typing import Optional
 from enum import Enum
 
 
+class ClubType(str, Enum):
+    DRIVER = "driver"
+    WOOD = "wood"
+    HYBRID = "hybrid"
+    LONG_IRON = "long_iron"
+    MID_IRON = "mid_iron"
+    SHORT_IRON = "short_iron"
+    WEDGE = "wedge"
+    PUTTER = "putter"
+
+
 class SwingPhase(str, Enum):
     ADDRESS = "address"
     TAKEAWAY = "takeaway"
@@ -53,6 +64,7 @@ class SwingMetrics(BaseModel):
 
 class AnalysisResult(BaseModel):
     session_id: str
+    club_type: Optional[ClubType] = None
     video_duration_seconds: float
     fps: float
     swing_phases: dict[SwingPhase, int]  # phase -> frame index
@@ -67,6 +79,7 @@ class AnalysisResult(BaseModel):
 class AnalysisResponse(BaseModel):
     """Lighter response model for the API — excludes per-frame keypoints."""
     session_id: str
+    club_type: Optional[ClubType] = None
     video_duration_seconds: float
     fps: float
     swing_phases: dict[SwingPhase, int]
@@ -81,6 +94,7 @@ class AnalysisResponse(BaseModel):
 class SessionTrendPoint(BaseModel):
     session_id: str
     created_at: str
+    club_type: Optional[ClubType] = None
     overall_score: float
     phase_scores: dict[str, float]
     metrics: SwingMetrics

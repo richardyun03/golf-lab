@@ -54,6 +54,7 @@ export const PHASE_ORDER: SwingPhase[] = [
 
 export interface AnalysisResponse {
   session_id: string;
+  club_type?: ClubType | null;
   video_duration_seconds: number;
   fps: number;
   swing_phases: Record<SwingPhase, number>;
@@ -72,9 +73,34 @@ export interface SessionSummary {
 
 const BASE = "/api/v1/analysis";
 
-export async function uploadVideo(file: File): Promise<AnalysisResponse> {
+export type ClubType =
+  | "driver"
+  | "wood"
+  | "hybrid"
+  | "long_iron"
+  | "mid_iron"
+  | "short_iron"
+  | "wedge"
+  | "putter";
+
+export const CLUB_LABELS: Record<ClubType, string> = {
+  driver: "Driver",
+  wood: "Fairway Wood",
+  hybrid: "Hybrid",
+  long_iron: "Long Iron (2-4i)",
+  mid_iron: "Mid Iron (5-7i)",
+  short_iron: "Short Iron (8-9i)",
+  wedge: "Wedge",
+  putter: "Putter",
+};
+
+export async function uploadVideo(
+  file: File,
+  clubType?: ClubType
+): Promise<AnalysisResponse> {
   const form = new FormData();
   form.append("video", file);
+  if (clubType) form.append("club_type", clubType);
   const res = await fetch(BASE + "/", { method: "POST", body: form });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: "Upload failed" }));
@@ -98,6 +124,7 @@ export async function listSessions(): Promise<SessionSummary[]> {
 export interface SessionTrendPoint {
   session_id: string;
   created_at: string;
+  club_type?: ClubType | null;
   overall_score: number;
   phase_scores: Record<string, number>;
   metrics: SwingMetrics;

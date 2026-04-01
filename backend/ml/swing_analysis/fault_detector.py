@@ -166,6 +166,22 @@ class PhaseFrames:
         return float(np.mean(values))
 
 
+# Club-type threshold multipliers.
+# Driver swings are bigger — more lateral movement, rotation, and head drift
+# are acceptable.  Wedge swings are compact — thresholds tighten.
+# Multiplier > 1 = more lenient (threshold raised), < 1 = stricter.
+_CLUB_MULTIPLIERS: dict[str, dict[str, float]] = {
+    "driver":     {"sway": 1.3, "slide": 1.3, "early_ext": 1.2, "head": 1.4, "ott": 1.0, "casting": 1.0, "chicken": 1.0, "reverse": 1.0},
+    "wood":       {"sway": 1.2, "slide": 1.2, "early_ext": 1.1, "head": 1.3, "ott": 1.0, "casting": 1.0, "chicken": 1.0, "reverse": 1.0},
+    "hybrid":     {"sway": 1.1, "slide": 1.1, "early_ext": 1.0, "head": 1.1, "ott": 1.0, "casting": 1.0, "chicken": 1.0, "reverse": 1.0},
+    "long_iron":  {"sway": 1.0, "slide": 1.0, "early_ext": 1.0, "head": 1.0, "ott": 1.0, "casting": 1.0, "chicken": 1.0, "reverse": 1.0},
+    "mid_iron":   {"sway": 1.0, "slide": 1.0, "early_ext": 1.0, "head": 1.0, "ott": 1.0, "casting": 1.0, "chicken": 1.0, "reverse": 1.0},
+    "short_iron": {"sway": 0.9, "slide": 0.9, "early_ext": 0.9, "head": 0.9, "ott": 1.0, "casting": 1.0, "chicken": 1.0, "reverse": 1.0},
+    "wedge":      {"sway": 0.8, "slide": 0.8, "early_ext": 0.8, "head": 0.8, "ott": 0.9, "casting": 0.9, "chicken": 1.0, "reverse": 1.0},
+}
+_DEFAULT_MULT: dict[str, float] = {"sway": 1.0, "slide": 1.0, "early_ext": 1.0, "head": 1.0, "ott": 1.0, "casting": 1.0, "chicken": 1.0, "reverse": 1.0}
+
+
 class FaultDetector:
     """
     Detects common swing faults using:
@@ -173,6 +189,7 @@ class FaultDetector:
     - Multi-frame averaging to reduce noise
     - Confidence gating to skip unreliable keypoints
     - Relative geometry (joint angles, normalized distances)
+    - Club-type adjusted thresholds
 
     Assumes a right-handed golfer (lead side = left, trail side = right).
     """
@@ -185,9 +202,12 @@ class FaultDetector:
         keypoints_by_frame: list[list[PoseKeypoint]],
         swing_phases: dict[SwingPhase, int],
         metrics: SwingMetrics,
+        club_type: str | None = None,
     ) -> list[SwingFault]:
         if not swing_phases or not keypoints_by_frame:
             return []
+
+        self._mult = _CLUB_MULTIPLIERS.get(club_type, _DEFAULT_MULT) if club_type else _DEFAULT_MULT
 
         pf = PhaseFrames(keypoints_by_frame, swing_phases)
         faults: list[SwingFault] = []
@@ -250,9 +270,10 @@ class FaultDetector:
             return None
 
         normalized_shift = abs(top_hip_x - addr_hip_x) / torso
+        threshold = 0.06 * self._mult["sway"]
 
-        if normalized_shift > 0.06:
-            severity = min(1.0, (normalized_shift - 0.06) / 0.10)
+        if normalized_shift > threshold:
+            severity = min(1.0, (normalized_shift - threshold) / 0.10)
             return SwingFault(
                 fault_type="sway",
                 phase=SwingPhase.BACKSWING,
@@ -292,8 +313,9 @@ class FaultDetector:
 
         spine_loss = addr_spine - impact_spine
         hip_rise = (addr_hip_y - impact_hip_y) if (addr_hip_y and impact_hip_y) else 0
+        ee_mult = self._mult["early_ext"]
 
-        if spine_loss > 5 or hip_rise > 0.02:
+        if spine_loss > 5 * ee_mult or hip_rise > 0.02 * ee_mult:
             severity = min(1.0, max(spine_loss / 15.0, hip_rise / 0.05))
             return SwingFault(
                 fault_type="early_extension",
@@ -506,9 +528,10 @@ class FaultDetector:
         lateral_shift = abs(impact_nose[0] - addr_nose[0]) / torso
         vertical_shift = abs(impact_nose[1] - addr_nose[1]) / torso
         total_movement = math.sqrt(lateral_shift ** 2 + vertical_shift ** 2)
+        head_thresh = 0.15 * self._mult["head"]
 
-        if total_movement > 0.15:
-            severity = min(1.0, (total_movement - 0.15) / 0.25)
+        if total_movement > head_thresh:
+            severity = min(1.0, (total_movement - head_thresh) / 0.25)
             direction = "laterally" if lateral_shift > vertical_shift else "vertically (dipping/rising)"
 
             return SwingFault(
@@ -574,8 +597,9 @@ class FaultDetector:
         if top_depth is not None and ds_depth is not None:
             depth_forward = (top_depth - ds_depth)  # positive = moved toward camera
 
-        if outward_move > 0.06:
-            severity = min(1.0, (outward_move - 0.06) / 0.12)
+        ott_thresh = 0.06 * self._mult["ott"]
+        if outward_move > ott_thresh:
+            severity = min(1.0, (outward_move - ott_thresh) / 0.12)
             # Boost severity if 3D confirms hands are also coming forward
             if depth_forward > 0.02:
                 severity = min(1.0, severity + 0.15)
@@ -668,8 +692,9 @@ class FaultDetector:
         # Target is to the left (lower X), so lateral slide = hip_x decreasing
         lateral_shift = (top_hip_x - impact_hip_x) / torso
 
-        if lateral_shift > 0.15:
-            severity = min(1.0, (lateral_shift - 0.15) / 0.15)
+        slide_thresh = 0.15 * self._mult["slide"]
+        if lateral_shift > slide_thresh:
+            severity = min(1.0, (lateral_shift - slide_thresh) / 0.15)
             return SwingFault(
                 fault_type="slide",
                 phase=SwingPhase.DOWNSWING,

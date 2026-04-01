@@ -1,7 +1,13 @@
 import { useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
-import { Upload, Loader2, AlertCircle } from "lucide-react";
-import { uploadVideo } from "../lib/api";
+import { Upload, Loader2, AlertCircle, ChevronDown } from "lucide-react";
+import { uploadVideo, CLUB_LABELS, type ClubType } from "../lib/api";
+
+const CLUB_OPTIONS: { value: ClubType; label: string }[] = Object.entries(
+  CLUB_LABELS
+)
+  .filter(([v]) => v !== "putter")
+  .map(([value, label]) => ({ value: value as ClubType, label }));
 
 export default function UploadPage() {
   const navigate = useNavigate();
@@ -9,6 +15,7 @@ export default function UploadPage() {
   const [uploading, setUploading] = useState(false);
   const [progress, setProgress] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [clubType, setClubType] = useState<ClubType | undefined>(undefined);
 
   const handleFile = useCallback(
     async (file: File) => {
@@ -23,7 +30,7 @@ export default function UploadPage() {
 
       try {
         setProgress("Analyzing swing... this may take a minute");
-        const result = await uploadVideo(file);
+        const result = await uploadVideo(file, clubType);
         navigate(`/analysis/${result.session_id}`);
       } catch (err) {
         setError(err instanceof Error ? err.message : "Analysis failed");
@@ -31,7 +38,7 @@ export default function UploadPage() {
         setProgress("");
       }
     },
-    [navigate]
+    [navigate, clubType]
   );
 
   const onDrop = useCallback(
@@ -53,6 +60,40 @@ export default function UploadPage() {
         <p className="text-gray-400 text-lg">
           Upload a golf swing video to get AI-powered phase detection, fault
           analysis, and metrics.
+        </p>
+      </div>
+
+      {/* Club type selector */}
+      <div className="mb-6">
+        <label className="block text-sm font-medium text-gray-400 mb-2">
+          Club Type <span className="text-gray-600">(optional)</span>
+        </label>
+        <div className="relative">
+          <select
+            value={clubType ?? ""}
+            onChange={(e) =>
+              setClubType(
+                e.target.value ? (e.target.value as ClubType) : undefined
+              )
+            }
+            disabled={uploading}
+            className="w-full appearance-none bg-gray-900 border border-gray-700 rounded-xl px-4 py-3 text-white text-sm focus:outline-none focus:border-emerald-500 transition-colors cursor-pointer disabled:opacity-50"
+          >
+            <option value="">Not specified</option>
+            {CLUB_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
+          <ChevronDown
+            size={16}
+            className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none"
+          />
+        </div>
+        <p className="text-xs text-gray-600 mt-1.5">
+          Selecting a club adjusts fault detection thresholds — driver swings
+          allow more movement, wedges are stricter.
         </p>
       </div>
 

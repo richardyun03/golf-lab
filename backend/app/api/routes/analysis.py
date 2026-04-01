@@ -5,9 +5,9 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-from fastapi import APIRouter, UploadFile, File, Depends, HTTPException
+from fastapi import APIRouter, Form, UploadFile, File, Depends, HTTPException
 from fastapi.responses import FileResponse, Response
-from app.schemas.analysis import AnalysisResponse, PoseKeypoint, SessionTrendPoint
+from app.schemas.analysis import AnalysisResponse, ClubType, PoseKeypoint, SessionTrendPoint
 from app.services.video_processor import VideoProcessor
 from app.services.swing_analyzer import SwingAnalyzer
 from app.services.storage import AnalysisStorage
@@ -65,6 +65,7 @@ def _render_to_jpeg(frame: np.ndarray, quality: int = 90) -> bytes:
 @router.post("/", response_model=AnalysisResponse)
 async def analyze_swing(
     video: UploadFile = File(...),
+    club_type: str | None = Form(None),
     video_processor: VideoProcessor = Depends(get_video_processor),
     swing_analyzer: SwingAnalyzer = Depends(get_swing_analyzer),
     storage: AnalysisStorage = Depends(get_storage),
@@ -76,10 +77,20 @@ async def analyze_swing(
     if ext not in {"mp4", "mov", "avi"}:
         raise HTTPException(status_code=400, detail=f"Unsupported format: {ext}")
 
+    # Validate club_type if provided
+    resolved_club: ClubType | None = None
+    if club_type:
+        try:
+            resolved_club = ClubType(club_type)
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Invalid club type: {club_type}")
+
     video_data = await video_processor.load(video)
+    video_data.club_type = club_type
     result = await swing_analyzer.analyze(video_data)
     response = AnalysisResponse(
         session_id=result.session_id,
+        club_type=resolved_club,
         video_duration_seconds=result.video_duration_seconds,
         fps=result.fps,
         swing_phases=result.swing_phases,

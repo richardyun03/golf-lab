@@ -19,6 +19,7 @@ class VideoData:
     width: int
     height: int
     raw_frames: list[np.ndarray] = field(default_factory=list)
+    club_type: str | None = None
 
 
 class VideoProcessor:

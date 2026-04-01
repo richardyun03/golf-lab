@@ -27,7 +27,7 @@ class SwingAnalyzer:
         keypoints_by_frame = await self.pose_extractor.extract(video)
         swing_phases = self.phase_classifier.classify(keypoints_by_frame)
         metrics = compute_metrics(keypoints_by_frame, swing_phases, video.fps)
-        faults = self.fault_detector.detect(keypoints_by_frame, swing_phases, metrics)
+        faults = self.fault_detector.detect(keypoints_by_frame, swing_phases, metrics, club_type=video.club_type)
         score = self._compute_score(faults, metrics)
         phase_scores = self._compute_phase_scores(faults)
 
