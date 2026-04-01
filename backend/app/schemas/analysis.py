@@ -84,6 +84,7 @@ class AnalysisResponse(BaseModel):
     fps: float
     swing_phases: dict[SwingPhase, int]
     metrics: SwingMetrics
+    ideal_ranges: dict[str, tuple[float, float]] = {}
     faults: list[SwingFault]
     overall_score: float
     phase_scores: dict[str, float] = {}

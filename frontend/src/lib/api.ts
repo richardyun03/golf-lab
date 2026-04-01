@@ -59,6 +59,7 @@ export interface AnalysisResponse {
   fps: number;
   swing_phases: Record<SwingPhase, number>;
   metrics: SwingMetrics;
+  ideal_ranges?: Record<string, [number, number]>;
   faults: SwingFault[];
   overall_score: number;
   phase_scores?: Record<string, number>;

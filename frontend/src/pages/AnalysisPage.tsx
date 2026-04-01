@@ -188,7 +188,7 @@ export default function AnalysisPage() {
           </div>
 
           {rightTab === "metrics" ? (
-            <MetricsPanel metrics={data.metrics} />
+            <MetricsPanel metrics={data.metrics} idealRanges={data.ideal_ranges} clubType={data.club_type} />
           ) : (
             <ProComparison sessionId={sessionId!} phases={data.swing_phases} />
           )}

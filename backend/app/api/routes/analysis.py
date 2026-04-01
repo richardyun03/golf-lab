@@ -16,6 +16,7 @@ from app.core.config import get_settings
 from ml.swing_analysis.skeleton_renderer import draw_skeleton
 from ml.pro_comparison.comparison_renderer import draw_comparison_frame
 from ml.pro_comparison.pro_database import PRO_PROFILES
+from ml.swing_analysis.club_profiles import get_ideal_ranges
 
 router = APIRouter()
 
@@ -95,6 +96,7 @@ async def analyze_swing(
         fps=result.fps,
         swing_phases=result.swing_phases,
         metrics=result.metrics,
+        ideal_ranges=get_ideal_ranges(club_type),
         faults=result.faults,
         overall_score=result.overall_score,
         phase_scores=result.phase_scores,
@@ -219,4 +221,7 @@ async def get_analysis(
     result = storage.get(session_id)
     if result is None:
         raise HTTPException(status_code=404, detail="Session not found.")
+    if not result.ideal_ranges:
+        club = result.club_type.value if result.club_type else None
+        result.ideal_ranges = get_ideal_ranges(club)
     return result
